@@ -1,0 +1,28 @@
+# 機密：永遠不進版控
+.env
+.env.*
+*.pem
+*.key
+.credentials.json
+oauth_creds.json
+
+# Tauri / Rust / Node
+/target/
+src-tauri/target/
+node_modules/
+dist/
+
+# 系統
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本機專用：編譯暫存位置（放在 OneDrive 外）
+src-tauri/.cargo/
+
+# tauri icon 會順便產生行動版圖示，本專案只做 Windows
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# 本機安裝檔（不進 git）
+release/
