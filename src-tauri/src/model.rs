@@ -78,6 +78,8 @@ pub struct Provider {
     pub reason: Option<Reason>,
     pub account_masked: Option<String>,
     pub account_full: Option<String>,
+    /// 換出去的 Claude 帳號（離線卡片）：不發通知、不進圓環
+    pub offline: bool,
     pub windows: Vec<UsageWindow>,
 }
 
@@ -95,13 +97,14 @@ impl Provider {
             reason: None,
             account_masked: None,
             account_full: None,
+            offline: false,
             windows: vec![],
         }
     }
 
     /// 該帳號「最緊」的那個額度還剩幾 %（沒有資料回傳 None）。暫停計算的窗口不算；已切換掉的 agy 舊帳號不算。
     pub fn lowest_left(&self) -> Option<f64> {
-        if self.status != "ok" || self.reason.as_ref().is_some_and(|r| r.key == "agy_switched") {
+        if self.offline || self.status != "ok" || self.reason.as_ref().is_some_and(|r| r.key == "agy_switched") {
             return None;
         }
         self.windows
@@ -181,5 +184,7 @@ mod tests {
         d.disabled = true;
         p.windows.push(d);
         assert_eq!(p.lowest_left(), Some(7.0));
+        p.offline = true;
+        assert_eq!(p.lowest_left(), None);
     }
 }

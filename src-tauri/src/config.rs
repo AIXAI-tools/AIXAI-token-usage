@@ -40,6 +40,9 @@ pub struct Config {
     pub notify_on_reset: bool,
     #[serde(default)]
     pub accounts: Vec<AccountCfg>,
+    /// 主畫面隱藏的離線帳號（offline_id）
+    #[serde(default)]
+    pub offline_hidden: Vec<String>,
 }
 
 fn default_lang() -> String {
@@ -57,6 +60,7 @@ impl Default for Config {
             notify_threshold: 10,
             notify_on_reset: true,
             accounts: vec![],
+            offline_hidden: vec![],
         }
     }
 }
@@ -122,6 +126,14 @@ impl Config {
 /// 設定／快取資料夾。測試時可用 AITOKEN_DATA_DIR 指到別處，不碰真正的設定。
 pub fn data_dir(fallback: Option<PathBuf>) -> Option<PathBuf> {
     std::env::var_os("AITOKEN_DATA_DIR").map(PathBuf::from).or(fallback)
+}
+
+/// 本機資料根目錄（紀錄檔、更新暫存、agy 專用家目錄）：%LOCALAPPDATA%\tools.aixai.token-usage
+/// 測試時跟著 AITOKEN_DATA_DIR。
+pub fn local_dir() -> Option<PathBuf> {
+    std::env::var_os("AITOKEN_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(|l| PathBuf::from(l).join("tools.aixai.token-usage")))
 }
 
 pub fn home_dir() -> Option<PathBuf> {

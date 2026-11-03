@@ -26,3 +26,6 @@ src-tauri/icons/ios/
 
 # 本機安裝檔（不進 git）
 release/
+
+# 使用者回報（/check-reports 下載，含使用者資料，不進版控）
+bug report/

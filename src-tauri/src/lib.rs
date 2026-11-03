@@ -1,13 +1,18 @@
 mod antigravity;
+mod applog;
 mod cache;
 mod claude;
 mod codex;
 mod config;
+mod feedback;
 mod model;
 mod notify;
+mod reports;
 mod ring;
+mod shot;
+mod update;
 
-use cache::{Cache, CacheEntry};
+use cache::{Cache, CacheEntry, Offline};
 use config::{AccountCfg, Config};
 use model::{mask_email, now_epoch, Provider, Reason, Snapshot, UsageWindow};
 use serde::Serialize;
@@ -46,8 +51,16 @@ struct AppState {
     config_path: PathBuf,
     cache: Mutex<Cache>,
     cache_path: PathBuf,
+    /// 換出去的 Claude 帳號（離線卡片）
+    offline: Mutex<Offline>,
+    offline_path: PathBuf,
     tracker: Mutex<notify::Tracker>,
     menu: Mutex<Option<MenuItems>>,
+    update: Mutex<update::Shared>,
+    reports: Mutex<reports::Store>,
+    reports_path: PathBuf,
+    /// 進設定頁前擷取的主畫面（本程式面板自己的畫面，PNG）
+    shot: Mutex<Option<Vec<u8>>>,
 }
 
 fn is_zh_system() -> bool {
@@ -143,7 +156,7 @@ fn fetch_platform(a: &AccountCfg) -> Fetched {
 }
 
 /// 查詢一個帳號；成功且為即時資料時更新快取；失敗時退回快取
-fn fetch_account(a: &AccountCfg, removable: bool, cache: &mut Cache, now: i64) -> Provider {
+fn fetch_account(a: &AccountCfg, removable: bool, cache: &mut Cache, offline: &mut Offline, now: i64) -> Provider {
     let f = fetch_platform(a);
     match f.outcome {
         Ok((windows, source)) => {
@@ -151,6 +164,14 @@ fn fetch_account(a: &AccountCfg, removable: bool, cache: &mut Cache, now: i64) -
             p.status = "ok".into();
             p.source = Some(source.into());
             p.as_of = Some(now);
+            // Claude：同一個資料夾換了帳號（/login）→ 舊帳號留成離線卡片；換回來 → 移除離線紀錄
+            if a.provider == "claude" && source == "live" {
+                if let Some(new_email) = f.email.as_deref() {
+                    if cache::track_swap(offline, cache.get(&a.id), new_email) {
+                        applog::log(&format!("claude offline accounts changed: now {}", offline.len()));
+                    }
+                }
+            }
             let email = f.email.or_else(|| cache.get(&a.id).and_then(|e| e.email.clone()));
             if source == "live" {
                 cache.insert(a.id.clone(), CacheEntry { email: email.clone(), queried_at: now, windows: windows.clone() });
@@ -167,6 +188,29 @@ fn fetch_account(a: &AccountCfg, removable: bool, cache: &mut Cache, now: i64) -
             p
         }
     }
+}
+
+/// 離線帳號卡片（Claude）：重置時間到的窗口恢復 100%；不發通知、不進圓環
+fn offline_provider(e: &cache::OfflineEntry, hidden: &[String], now: i64) -> Provider {
+    let id = cache::offline_id(&e.email);
+    let mut p = Provider::placeholder("claude", "ok");
+    p.visible = !hidden.contains(&id);
+    p.key = format!("offline:{id}");
+    p.source = Some("offline".into());
+    p.as_of = Some(e.queried_at);
+    p.account_masked = Some(mask_email(&e.email));
+    p.windows = cache::apply_reset(&e.windows, now);
+    p.offline = true;
+    p
+}
+
+/// 把離線卡片接在最後一個 Claude 帳號後面
+fn with_offline(mut providers: Vec<Provider>, offline: &Offline, hidden: &[String], now: i64) -> Vec<Provider> {
+    providers.retain(|p| !p.offline);
+    let at = providers.iter().rposition(|p| p.id == "claude").map_or(providers.len(), |i| i + 1);
+    let offs: Vec<Provider> = offline.iter().map(|e| offline_provider(e, hidden, now)).collect();
+    providers.splice(at..at, offs);
+    providers
 }
 
 fn agy_id(email: &Option<String>) -> String {
@@ -205,6 +249,7 @@ fn do_refresh(app: &AppHandle) -> Snapshot {
 
     let (accounts, agy_current) = current_accounts(app);
     let mut cache = state.cache.lock().unwrap().clone();
+    let mut offline = state.offline.lock().unwrap().clone();
     let now = now_epoch();
     let mut providers = vec![];
     for a in &accounts {
@@ -214,14 +259,32 @@ fn do_refresh(app: &AppHandle) -> Snapshot {
         } else if a.provider == "antigravity" && a.id != agy_current {
             from_cache(a, removable, &cache, Some(Reason::new("agy_switched")), now)
         } else {
-            fetch_account(a, removable, &mut cache, now)
+            fetch_account(a, removable, &mut cache, &mut offline, now)
         };
         providers.push(p);
     }
     cache::save(&state.cache_path, &cache);
     *state.cache.lock().unwrap() = cache;
+    let offline_changed = offline != *state.offline.lock().unwrap();
+    if offline_changed {
+        cache::save_offline(&state.offline_path, &offline);
+        *state.offline.lock().unwrap() = offline.clone();
+    }
+
+    for p in &providers {
+        applog::log(&format!(
+            "refresh {} visible={} status={} source={} reason={}",
+            p.key,
+            p.visible,
+            p.status,
+            p.source.as_deref().unwrap_or("-"),
+            p.reason.as_ref().map(|r| r.key.as_str()).unwrap_or("-")
+        ));
+    }
 
     send_notifications(app, &providers, now);
+    let hidden = state.config.lock().unwrap().offline_hidden.clone();
+    let providers = with_offline(providers, &offline, &hidden, now);
 
     let snap = {
         let mut s = state.snapshot.lock().unwrap();
@@ -463,6 +526,15 @@ struct AccountDto {
 }
 
 #[derive(Serialize)]
+struct OfflineDto {
+    id: String,
+    email_masked: String,
+    /// 換出前最後一次查詢的時間
+    queried_at: i64,
+    visible: bool,
+}
+
+#[derive(Serialize)]
 struct SettingsDto {
     language: String,
     zh: bool,
@@ -470,6 +542,7 @@ struct SettingsDto {
     notify_on_reset: bool,
     autostart: bool,
     accounts: Vec<AccountDto>,
+    offline: Vec<OfflineDto>,
 }
 
 #[derive(Serialize)]
@@ -498,6 +571,16 @@ fn settings_dto(app: &AppHandle) -> SettingsDto {
             }
         })
         .collect();
+    let offline = state
+        .offline
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            let id = cache::offline_id(&e.email);
+            OfflineDto { visible: !cfg.offline_hidden.contains(&id), id, email_masked: mask_email(&e.email), queried_at: e.queried_at }
+        })
+        .collect();
     SettingsDto {
         zh: zh_of(&cfg),
         language: cfg.language,
@@ -505,6 +588,7 @@ fn settings_dto(app: &AppHandle) -> SettingsDto {
         notify_on_reset: cfg.notify_on_reset,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         accounts,
+        offline,
     }
 }
 
@@ -565,6 +649,48 @@ fn set_account(app: AppHandle, key: String, name: Option<String>, visible: Optio
     if newly_visible {
         refresh_soon(&app);
     }
+    settings_dto(&app)
+}
+
+/// 離線帳號卡片資料變動後，重建畫面上的離線卡片
+fn rebuild_offline_cards(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let hidden = state.config.lock().unwrap().offline_hidden.clone();
+    let offline = state.offline.lock().unwrap().clone();
+    let mut snap = state.snapshot.lock().unwrap();
+    snap.providers = with_offline(std::mem::take(&mut snap.providers), &offline, &hidden, now_epoch());
+}
+
+#[tauri::command]
+fn set_offline_visible(app: AppHandle, id: String, visible: bool) -> SettingsDto {
+    {
+        let state = app.state::<AppState>();
+        let mut cfg = state.config.lock().unwrap();
+        cfg.offline_hidden.retain(|x| *x != id);
+        if !visible {
+            cfg.offline_hidden.push(id);
+        }
+        let _ = cfg.save(&state.config_path);
+    }
+    rebuild_offline_cards(&app);
+    emit_snapshot(&app);
+    settings_dto(&app)
+}
+
+#[tauri::command]
+fn forget_offline(app: AppHandle, id: String) -> SettingsDto {
+    {
+        let state = app.state::<AppState>();
+        let mut off = state.offline.lock().unwrap();
+        if cache::forget_offline(&mut off, &id) {
+            cache::save_offline(&state.offline_path, &off);
+        }
+        let mut cfg = state.config.lock().unwrap();
+        cfg.offline_hidden.retain(|x| *x != id);
+        let _ = cfg.save(&state.config_path);
+    }
+    rebuild_offline_cards(&app);
+    emit_snapshot(&app);
     settings_dto(&app)
 }
 
@@ -630,19 +756,415 @@ fn detect_accounts(app: AppHandle) -> (SettingsDto, usize) {
     (settings_dto(&app), added)
 }
 
-/// 新增帳號用的一行 PowerShell 指令（資料夾自動取下一個空號）
-#[tauri::command]
-fn add_account_hint(app: AppHandle, platform: String) -> Option<AddHint> {
+/// 新增帳號用的一行 PowerShell 指令（資料夾自動取下一個空號）。只有這兩種固定格式。
+fn build_hint(app: &AppHandle, platform: &str) -> Option<AddHint> {
     let home = config::home_dir()?;
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap();
-    let (prefix, command) = match platform.as_str() {
+    let (prefix, command) = match platform {
         "claude" => (".claude-", r#"$env:CLAUDE_CONFIG_DIR="$HOME\{dir}"; claude"#),
         "codex" => (".codex-", r#"$env:CODEX_HOME="$HOME\{dir}"; codex login"#),
         _ => return None,
     };
     let dir = config::next_free_dir(&home, prefix, &cfg);
     Some(AddHint { command: command.replace("{dir}", &dir), dir })
+}
+
+#[tauri::command]
+fn add_account_hint(app: AppHandle, platform: String) -> Option<AddHint> {
+    build_hint(&app, &platform)
+}
+
+/// 開新的 PowerShell 主控台視窗（-NoExit）執行指令，工作目錄為使用者家目錄
+fn spawn_powershell(command: &str) -> bool {
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args(["-NoExit", "-NoLogo", "-Command", command]);
+    if let Some(home) = config::home_dir() {
+        cmd.current_dir(home);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        cmd.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    cmd.spawn().is_ok()
+}
+
+/// 使用者按「開啟 PowerShell 登入」：開一個新的 PowerShell 視窗並執行指令。
+/// 這是全程式唯一刻意顯示視窗的子程序；指令由後端依 platform 組成，不接受前端傳來的字串。
+#[tauri::command]
+fn open_powershell_login(app: AppHandle, platform: String) -> bool {
+    let Some(hint) = build_hint(&app, &platform) else { return false };
+    let ok = spawn_powershell(&hint.command);
+    applog::log(&format!("open powershell login platform={platform} dir={} ok={ok}", hint.dir));
+    ok
+}
+
+// ---------- 線上更新 ----------
+
+const UPDATE_EVENT: &str = "update-state";
+const UPDATE_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+fn emit_update(app: &AppHandle) {
+    let s = app.state::<AppState>().update.lock().unwrap().state.clone();
+    let _ = app.emit_to(PANEL, UPDATE_EVENT, s);
+}
+
+fn update_dir() -> Option<PathBuf> {
+    config::local_dir().map(|d| d.join("update"))
+}
+
+/// 查 GitHub 最新版，結果存在 AppState（失敗靜默，只寫 log）
+fn check_update(app: &AppHandle) -> update::UpdateState {
+    {
+        let st = app.state::<AppState>();
+        let mut u = st.update.lock().unwrap();
+        if u.state.checking {
+            return u.state.clone();
+        }
+        u.state.checking = true;
+    }
+    emit_update(app);
+    let result = update::fetch_latest();
+    let now = now_epoch();
+    let snap = {
+        let st = app.state::<AppState>();
+        let mut u = st.update.lock().unwrap();
+        match result {
+            Ok(rel) => {
+                applog::log(&format!("update check ok: latest={} current={}", rel.tag, update::current_version()));
+                u.apply_release(rel, now);
+            }
+            Err(e) => {
+                applog::log(&format!("update check failed: {e}"));
+                u.state.check_error = Some(e);
+                u.state.last_check = Some(now);
+            }
+        }
+        u.state.checking = false;
+        u.state.clone()
+    };
+    emit_update(app);
+    snap
+}
+
+fn set_install_stage(app: &AppHandle, stage: &str, percent: u8) {
+    {
+        let st = app.state::<AppState>();
+        let mut u = st.update.lock().unwrap();
+        u.state.stage = stage.into();
+        u.state.percent = percent;
+    }
+    emit_update(app);
+}
+
+fn run_install(app: &AppHandle, rel: &update::Release) -> Result<(), String> {
+    let setup = rel.setup.clone().ok_or("no_setup_asset")?;
+    let sums = rel.sums.clone().ok_or("sums_missing")?;
+    if !update::safe_exe_name(&setup.name) {
+        return Err("bad_asset_name".into());
+    }
+    let dir = update_dir().ok_or("no_dir")?;
+    let _ = std::fs::create_dir_all(&dir);
+    clear_update_dir(&dir);
+    applog::log(&format!("update install start: {}", setup.name));
+    // 先抓校驗檔：沒有就不下載、不安裝
+    let sums_text = update::fetch_text(&sums.url, 64 * 1024)?;
+    let dest = dir.join(&setup.name);
+    let mut last = 255u8;
+    let dl = update::download_to(&setup.url, &dest, setup.size, |done, total| {
+        let pct = if total > 0 { ((done * 100) / total).min(100) as u8 } else { 0 };
+        if pct != last {
+            last = pct;
+            set_install_stage(app, "download", pct);
+        }
+    });
+    if let Err(e) = dl {
+        let _ = std::fs::remove_file(&dest); // 程式自己下載的暫存
+        return Err(e);
+    }
+    set_install_stage(app, "verify", 100);
+    update::verify_download(&dest, &sums_text, &setup.name)?;
+    applog::log("update sha256 ok, launching installer");
+    set_install_stage(app, "install", 100);
+    // NSIS：/S 靜默、/UPDATE 更新模式（保留捷徑與設定）、/R 裝完以目前使用者重新開啟程式
+    let mut cmd = std::process::Command::new(&dest);
+    cmd.args(["/S", "/UPDATE", "/R"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn().map_err(|_| "launch_failed".to_string())?;
+    std::thread::sleep(Duration::from_millis(600));
+    app.exit(0);
+    Ok(())
+}
+
+/// 清掉更新暫存資料夾裡的檔案（都是程式自己下載的）
+fn clear_update_dir(dir: &std::path::Path) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.path().is_file() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+fn start_install(app: &AppHandle) {
+    let rel = {
+        let st = app.state::<AppState>();
+        let mut u = st.update.lock().unwrap();
+        if u.installing || !u.state.has_update {
+            return;
+        }
+        let Some(rel) = u.release.clone() else { return };
+        u.installing = true;
+        u.state.stage = "download".into();
+        u.state.percent = 0;
+        u.state.fail = None;
+        rel
+    };
+    emit_update(app);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = run_install(&app, &rel) {
+            applog::log(&format!("update install failed: {e}"));
+            {
+                let st = app.state::<AppState>();
+                let mut u = st.update.lock().unwrap();
+                u.installing = false;
+                u.state.stage = "error".into();
+                u.state.fail = Some(e);
+            }
+            emit_update(&app);
+        }
+    });
+}
+
+#[tauri::command]
+fn get_update_state(state: State<AppState>) -> update::UpdateState {
+    state.update.lock().unwrap().state.clone()
+}
+
+#[tauri::command]
+async fn check_update_cmd(app: AppHandle) -> Result<update::UpdateState, String> {
+    tauri::async_runtime::spawn_blocking(move || check_update(&app)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn install_update_cmd(app: AppHandle) {
+    start_install(&app);
+}
+
+/// 用預設瀏覽器開發佈頁（網址寫死，不接受前端傳入）
+#[tauri::command]
+fn open_releases_page() {
+    let mut cmd = std::process::Command::new("explorer.exe");
+    cmd.arg(update::RELEASES_PAGE);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd.spawn();
+}
+
+// ---------- 回報 ----------
+
+const REPLY_EVERY: Duration = Duration::from_secs(6 * 3600);
+const REPORTS_EVENT: &str = "reports-changed";
+
+fn emit_reports(app: &AppHandle) {
+    let unread = app.state::<AppState>().reports.lock().unwrap().unread_count() > 0;
+    let _ = app.emit_to(PANEL, REPORTS_EVENT, unread);
+}
+
+/// 查回覆（只送編號）；失敗靜默寫 log。回傳新增則數
+fn check_replies(app: &AppHandle) -> usize {
+    let state = app.state::<AppState>();
+    let ids = state.reports.lock().unwrap().pending_ids(now_epoch());
+    if ids.is_empty() {
+        return 0;
+    }
+    match reports::fetch_replies(&ids) {
+        Ok(found) => {
+            let added = {
+                let mut st = state.reports.lock().unwrap();
+                let n = st.apply_replies(found);
+                st.save(&state.reports_path);
+                n
+            };
+            applog::log(&format!("reply check ok: asked={} new={added}", ids.len()));
+            emit_reports(app);
+            added
+        }
+        Err(e) => {
+            applog::log(&format!("reply check failed: {e}"));
+            0
+        }
+    }
+}
+
+/// 擷取面板自己的畫面（只對面板視窗的 HWND 取圖，不碰螢幕）
+#[tauri::command]
+fn capture_panel_shot(app: AppHandle) -> bool {
+    let Some(win) = app.get_webview_window(PANEL) else { return false };
+    let Ok(h) = win.hwnd() else { return false };
+    let png = shot::capture_window_png(h.0 as isize);
+    let ok = png.is_some();
+    *app.state::<AppState>().shot.lock().unwrap() = png;
+    applog::log(&format!("panel shot captured={ok}"));
+    ok
+}
+
+#[derive(Serialize)]
+struct PrepareDto {
+    sys: String,
+    status: String,
+    log: String,
+    log_kb: u64,
+    shot_b64: Option<String>,
+    shot_kb: u64,
+}
+
+fn build_diagnostics(app: &AppHandle) -> feedback::Diagnostics {
+    let state = app.state::<AppState>();
+    let lang = {
+        let c = state.config.lock().unwrap();
+        if zh_of(&c) { "zh-TW" } else { "en" }.to_string()
+    };
+    let snap = state.snapshot.lock().unwrap().clone();
+    let shot_png = state.shot.lock().unwrap().clone();
+    feedback::Diagnostics {
+        sys: feedback::sys_text(update::current_version(), &shot::windows_version(), &lang),
+        status: feedback::status_text(&snap.providers),
+        log: applog::read_recent(64),
+        shot: shot_png,
+    }
+}
+
+#[tauri::command]
+fn report_prepare(app: AppHandle) -> PrepareDto {
+    use base64::Engine;
+    let d = build_diagnostics(&app);
+    PrepareDto {
+        log_kb: (d.log.len() as u64).div_ceil(1024),
+        shot_kb: d.shot.as_ref().map(|s| (s.len() as u64).div_ceil(1024)).unwrap_or(0),
+        shot_b64: d.shot.as_ref().map(|s| base64::engine::general_purpose::STANDARD.encode(s)),
+        sys: d.sys,
+        status: d.status,
+        log: d.log,
+    }
+}
+
+/// 預覽「會送出」的內文（與送出用同一個 compose_body）；也給「複製內容」用
+#[tauri::command]
+fn report_preview(app: AppHandle, req: feedback::ReportRequest) -> String {
+    feedback::compose_body(&req, &build_diagnostics(&app))
+}
+
+#[tauri::command]
+async fn report_send(app: AppHandle, req: feedback::ReportRequest) -> Result<String, String> {
+    feedback::validate(&req)?;
+    let diag = build_diagnostics(&app);
+    let req2 = req.clone();
+    let res = tauri::async_runtime::spawn_blocking(move || feedback::submit(&req2, &diag)).await.map_err(|e| e.to_string())?;
+    match res {
+        Ok(id) => {
+            applog::log(&format!("report sent id={id} want_reply={}", req.want_reply));
+            {
+                let state = app.state::<AppState>();
+                let mut st = state.reports.lock().unwrap();
+                st.add(reports::Entry {
+                    id: id.clone(),
+                    title: req.title.trim().to_string(),
+                    ts: now_epoch(),
+                    want_reply: req.want_reply,
+                    ref_id: req.ref_id.clone().filter(|r| feedback::is_report_id(r)),
+                    ..Default::default()
+                });
+                st.save(&state.reports_path);
+            }
+            Ok(id)
+        }
+        Err(e) => {
+            applog::log(&format!("report send failed: {e}"));
+            Err(e)
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ReplyDto {
+    #[serde(flatten)]
+    reply: reports::Reply,
+    unread: bool,
+    /// fixed 且帶的版本比目前新 → 面板顯示「更新到 vX」
+    can_update: bool,
+}
+
+#[derive(Serialize)]
+struct ReportDto {
+    id: String,
+    title: String,
+    ts: i64,
+    want_reply: bool,
+    replies: Vec<ReplyDto>,
+}
+
+fn report_dtos(app: &AppHandle) -> Vec<ReportDto> {
+    let st = app.state::<AppState>().reports.lock().unwrap().clone();
+    st.reports
+        .iter()
+        .map(|e| ReportDto {
+            id: e.id.clone(),
+            title: e.title.clone(),
+            ts: e.ts,
+            want_reply: e.want_reply,
+            replies: e
+                .replies
+                .iter()
+                .map(|r| ReplyDto {
+                    unread: !e.seen.contains(&r.rid),
+                    can_update: r.kind == "fixed" && !r.version.is_empty() && update::is_newer(&r.version, update::current_version()),
+                    reply: r.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn report_list(app: AppHandle) -> Vec<ReportDto> {
+    report_dtos(&app)
+}
+
+#[tauri::command]
+fn report_mark_seen(app: AppHandle, id: String) {
+    {
+        let state = app.state::<AppState>();
+        let mut st = state.reports.lock().unwrap();
+        st.mark_seen(&id);
+        st.save(&state.reports_path);
+    }
+    emit_reports(&app);
+}
+
+#[tauri::command]
+async fn report_check_cmd(app: AppHandle) -> Result<Vec<ReportDto>, String> {
+    let a = app.clone();
+    tauri::async_runtime::spawn_blocking(move || check_replies(&a)).await.map_err(|e| e.to_string())?;
+    Ok(report_dtos(&app))
+}
+
+#[tauri::command]
+fn report_unread(state: State<AppState>) -> bool {
+    state.reports.lock().unwrap().unread_count() > 0
 }
 
 pub fn run() {
@@ -663,16 +1185,32 @@ pub fn run() {
             start_view,
             set_account,
             remove_account,
+            set_offline_visible,
+            forget_offline,
             set_notify,
             set_language,
             detect_accounts,
-            add_account_hint
+            add_account_hint,
+            open_powershell_login,
+            get_update_state,
+            check_update_cmd,
+            install_update_cmd,
+            open_releases_page,
+            capture_panel_shot,
+            report_prepare,
+            report_preview,
+            report_send,
+            report_list,
+            report_mark_seen,
+            report_check_cmd,
+            report_unread
         ])
         .setup(|app| {
             // 設定與快取資料夾
             let dir = config::data_dir(app.path().app_config_dir().ok()).ok_or("no config dir")?;
             let config_path = dir.join("config.json");
             let cache_path = dir.join("cache.json");
+            let offline_path = dir.join("offline.json");
             let mut cfg = Config::load(&config_path);
             cfg.ensure_defaults();
             cfg.sort_accounts();
@@ -684,10 +1222,22 @@ pub fn run() {
             }
             let _ = cfg.save(&config_path);
 
+            if let Some(base) = config::local_dir() {
+                applog::init(&base);
+            }
+            applog::log(&format!("start v{}", update::current_version()));
+            // 上次更新留下的安裝檔暫存（新版啟動時安裝已結束）
+            if let Some(d) = update_dir() {
+                clear_update_dir(&d);
+            }
+
+            let reports_path = config::local_dir().map(|d| d.join("reports.json")).unwrap_or_else(|| dir.join("reports.json"));
             let cache = cache::load(&cache_path);
             // 剛啟動時先用快取顯示，第一次查詢完成後換成即時資料
             let now = now_epoch();
+            let offline = cache::load_offline(&offline_path);
             let providers: Vec<Provider> = cfg.accounts.iter().map(|a| from_cache(a, a.extra, &cache, None, now)).collect();
+            let providers = with_offline(providers, &offline, &cfg.offline_hidden, now);
             let zh = zh_of(&cfg);
             let lang = cfg.language.clone();
             app.manage(AppState {
@@ -698,8 +1248,14 @@ pub fn run() {
                 config_path,
                 cache: Mutex::new(cache),
                 cache_path,
+                offline: Mutex::new(offline),
+                offline_path,
                 tracker: Mutex::new(notify::Tracker::default()),
                 menu: Mutex::new(None),
+                update: Mutex::new(update::Shared::new()),
+                reports: Mutex::new(reports::Store::load(&reports_path)),
+                reports_path,
+                shot: Mutex::new(None),
             });
 
             // 右鍵選單：立即重新整理／語言 ▸／開機自動啟動／結束
@@ -753,6 +1309,28 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // 更新檢查：啟動後 1 分鐘，之後每 24 小時（失敗靜默）。AITOKEN_UPDATE_FIRST_CHECK_SECS 供測試縮短
+            let uh = app.handle().clone();
+            std::thread::spawn(move || {
+                let first = std::env::var("AITOKEN_UPDATE_FIRST_CHECK_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60);
+                std::thread::sleep(Duration::from_secs(first));
+                loop {
+                    check_update(&uh);
+                    std::thread::sleep(UPDATE_EVERY);
+                }
+            });
+
+            // 查開發者回覆：啟動後 2 分鐘，之後每 6 小時（失敗靜默）。AITOKEN_REPLY_FIRST_CHECK_SECS 供測試縮短
+            let rh = app.handle().clone();
+            std::thread::spawn(move || {
+                let first = std::env::var("AITOKEN_REPLY_FIRST_CHECK_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(120);
+                std::thread::sleep(Duration::from_secs(first));
+                loop {
+                    check_replies(&rh);
+                    std::thread::sleep(REPLY_EVERY);
+                }
+            });
+
             // 背景定時更新：啟動時一次，之後每 5 分鐘
             let handle = app.handle().clone();
             // 測試用：設了 AITOKEN_SHOW_ON_START 就在第一次查詢後直接打開面板（方便截圖驗證）
@@ -781,4 +1359,44 @@ pub fn run() {
                 api.prevent_exit();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_cards_follow_claude_and_apply_reset() {
+        let mut codex = Provider::placeholder("codex", "ok");
+        codex.key = "codex:default".into();
+        let mut claude = Provider::placeholder("claude", "ok");
+        claude.key = "claude:default".into();
+        let mut agy = Provider::placeholder("antigravity", "ok");
+        agy.key = "antigravity:x".into();
+        let w = |used: f64, reset: Option<i64>| UsageWindow::new(model::WindowLabel::from_minutes(300, None), used, reset);
+        let off = vec![cache::OfflineEntry { email: "aixa.test@gmail.com".into(), queried_at: 5, windows: vec![w(100.0, Some(10)), w(61.0, Some(i64::MAX))] }];
+        let out = with_offline(vec![codex, claude, agy], &off, &[], 100);
+        let keys: Vec<&str> = out.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys[..2], ["codex:default", "claude:default"]);
+        assert!(keys[2].starts_with("offline:") && keys[3] == "antigravity:x");
+        let o = &out[2];
+        assert!(o.offline && o.visible && o.lowest_left().is_none() && o.account_full.is_none());
+        assert_eq!(o.account_masked.as_deref(), Some("aixa•••@gmail.com"));
+        assert_eq!(o.windows[0].used_percent, 0.0);
+        assert!(o.windows[0].reset_done);
+        assert_eq!(o.windows[1].used_percent, 61.0);
+        // 重建不會重複；隱藏後 visible=false
+        let again = with_offline(out, &off, &[cache::offline_id("aixa.test@gmail.com")], 100);
+        assert_eq!(again.iter().filter(|p| p.offline).count(), 1);
+        assert!(!again.iter().find(|p| p.offline).unwrap().visible);
+    }
+
+    /// 手動實測用（會開真的 PowerShell 視窗）：cargo test open_ps -- --ignored
+    /// 指令由環境變數 AITOKEN_TEST_PS_CMD 提供
+    #[test]
+    #[ignore]
+    fn open_ps_window_manual() {
+        let cmd = std::env::var("AITOKEN_TEST_PS_CMD").unwrap();
+        assert!(super::spawn_powershell(&cmd));
+    }
 }

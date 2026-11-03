@@ -1,6 +1,6 @@
 [package]
 name = "aixai-token-usage"
-version = "0.1.0"
+version = "0.2.0"
 description = "AIXAI Token Usage — 系統匣額度監看小工具"
 edition = "2021"
 
@@ -21,6 +21,10 @@ tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+png = "0.18"
 
 [profile.release]
 strip = true
