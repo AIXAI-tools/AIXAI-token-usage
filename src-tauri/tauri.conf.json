@@ -10,22 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "panel",
-        "title": "AIXAI Token Usage",
-        "url": "index.html",
-        "width": 336,
-        "height": 420,
-        "visible": false,
-        "decorations": false,
-        "resizable": false,
-        "skipTaskbar": true,
-        "alwaysOnTop": true,
-        "shadow": true,
-        "focus": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost"
     }

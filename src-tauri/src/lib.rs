@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_notification::NotificationExt;
 
@@ -319,11 +319,18 @@ fn place_panel(win: &WebviewWindow) {
     let _ = win.set_position(PhysicalPosition::new(x, y));
 }
 
+// 省記憶體：面板（WebView2，約 65 MB）只在打開時存在；收起就整個關掉，背景只剩主程式（約 4 MB）。
+// 圓環圖示、定時查詢、通知都在 Rust 端，不需要 WebView。
+
+/// 面板已建立、但內容還沒畫好（尚未顯示）
+static PANEL_PENDING: AtomicBool = AtomicBool::new(false);
+
 fn toggle_panel(app: &AppHandle) {
-    let Some(win) = app.get_webview_window(PANEL) else { return };
-    if win.is_visible().unwrap_or(false) {
-        let _ = win.hide();
-        return;
+    if let Some(win) = app.get_webview_window(PANEL) {
+        if win.is_visible().unwrap_or(false) {
+            close_panel(app);
+        }
+        return; // 建立中：等它自己顯示
     }
     // 點圖示時面板會先失焦收起，緊接著的點擊不要又把它打開
     if let Some(state) = app.try_state::<AppState>() {
@@ -331,9 +338,66 @@ fn toggle_panel(app: &AppHandle) {
             return;
         }
     }
-    place_panel(&win);
-    let _ = win.show();
-    let _ = win.set_focus();
+    open_panel(app);
+}
+
+fn open_panel(app: &AppHandle) {
+    PANEL_PENDING.store(true, Ordering::SeqCst);
+    let built = WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("index.html".into()))
+        .title("AIXAI Token Usage")
+        .inner_size(PANEL_WIDTH, 420.0)
+        .visible(false)
+        .decorations(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .shadow(true)
+        .focused(true)
+        // 面板很簡單，不需要顯示卡加速：關掉 GPU 程序省記憶體。
+        // 設了這個會取代 wry 的預設參數，所以預設的 --disable-features 要自己寫回來。
+        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu")
+        .build();
+    let Ok(win) = built else {
+        PANEL_PENDING.store(false, Ordering::SeqCst);
+        return;
+    };
+    let handle = app.clone();
+    win.on_window_event(move |e| {
+        // 顯示前（建立過程）的失焦不算
+        if matches!(e, WindowEvent::Focused(false)) && !PANEL_PENDING.load(Ordering::SeqCst) {
+            let h = handle.clone();
+            let _ = handle.run_on_main_thread(move || close_panel(&h));
+        }
+    });
+    // 保險：前端沒回報尺寸時，1.5 秒後照樣顯示
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        let h = handle.clone();
+        let _ = handle.run_on_main_thread(move || reveal_panel(&h));
+    });
+}
+
+/// 內容畫好、尺寸算好之後才顯示，避免先閃一個錯的大小
+fn reveal_panel(app: &AppHandle) {
+    if !PANEL_PENDING.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(win) = app.get_webview_window(PANEL) {
+        place_panel(&win);
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+fn close_panel(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.last_hidden.lock().unwrap() = Some(Instant::now());
+    }
+    PANEL_PENDING.store(false, Ordering::SeqCst);
+    if let Some(win) = app.get_webview_window(PANEL) {
+        let _ = win.destroy();
+    }
 }
 
 // ---------- 右鍵選單 ----------
@@ -460,6 +524,7 @@ fn panel_resize(app: AppHandle, height: f64) {
     let h = height.clamp(120.0, 900.0);
     let _ = win.set_size(LogicalSize::new(PANEL_WIDTH, h));
     place_panel(&win);
+    reveal_panel(&app);
 }
 
 #[tauri::command]
@@ -584,10 +649,8 @@ pub fn run() {
     tauri::Builder::default()
         // 只允許一份：重複開啟時改為打開原本那份的面板
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window(PANEL) {
-                if !win.is_visible().unwrap_or(false) {
-                    toggle_panel(app);
-                }
+            if !app.get_webview_window(PANEL).is_some_and(|w| w.is_visible().unwrap_or(false)) {
+                toggle_panel(app);
             }
         }))
         .plugin(tauri_plugin_notification::init())
@@ -690,18 +753,6 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            if let Some(win) = app.get_webview_window(PANEL) {
-                let handle = app.handle().clone();
-                win.on_window_event(move |e| {
-                    if let WindowEvent::Focused(false) = e {
-                        if let Some(w) = handle.get_webview_window(PANEL) {
-                            let _ = w.hide();
-                        }
-                        *handle.state::<AppState>().last_hidden.lock().unwrap() = Some(Instant::now());
-                    }
-                });
-            }
-
             // 背景定時更新：啟動時一次，之後每 5 分鐘
             let handle = app.handle().clone();
             // 測試用：設了 AITOKEN_SHOW_ON_START 就在第一次查詢後直接打開面板（方便截圖驗證）
@@ -722,6 +773,12 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running AIXAI Token Usage");
+        .build(tauri::generate_context!())
+        .expect("error while building AIXAI Token Usage")
+        .run(|_app, event| {
+            // 面板關掉後沒有任何視窗，Tauri 預設會結束程式；只有右鍵「結束」（帶 exit code）才真的結束
+            if let RunEvent::ExitRequested { code: None, api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
