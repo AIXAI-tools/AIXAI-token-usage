@@ -22,22 +22,26 @@ jobs:
       - run: npm ci
       - name: Build NSIS installer
         run: npm run tauri build
-      - name: Compute SHA256
+      - name: Prepare assets and SHA256
         shell: pwsh
         run: |
-          $files = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe"
-          if (-not $files) { throw "找不到 NSIS 安裝檔" }
+          # 檔名的空格換成 -（GitHub 上傳會把空格改成點，SHA256SUMS 的檔名就對不上）
+          $files = @(Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe")
+          if ($files.Count -eq 0) { throw "找不到 NSIS 安裝檔" }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
           $lines = foreach ($f in $files) {
-            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
-            "$h  $($f.Name)"
+            $name = $f.Name -replace ' ', '-'
+            Copy-Item $f.FullName "release-assets/$name"
+            $h = (Get-FileHash "release-assets/$name" -Algorithm SHA256).Hash.ToLower()
+            "$h  $name"
           }
-          $lines | Set-Content -Path SHA256SUMS.txt -Encoding ascii
-          Get-Content SHA256SUMS.txt
+          $lines | Set-Content -Path release-assets/SHA256SUMS.txt -Encoding ascii
+          Get-Content release-assets/SHA256SUMS.txt
       - name: Create draft release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 一律包成陣列：只有一個檔案時，@字串 會被拆成單一字元
-          $files = @((Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe").FullName)
-          gh release create "${{ github.ref_name }}" --draft --title "${{ github.ref_name }}" --generate-notes $files SHA256SUMS.txt
+          $files = @((Get-ChildItem "release-assets/*").FullName)
+          gh release create "${{ github.ref_name }}" --draft --title "${{ github.ref_name }}" --generate-notes $files
