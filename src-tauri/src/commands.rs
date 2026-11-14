@@ -113,7 +113,7 @@ pub(crate) fn get_settings(app: AppHandle) -> SettingsDto {
     settings_dto(&app)
 }
 
-/// 前端每次換頁／輸入時回報：是否停在主畫面以外（失焦不收起），以及要還原的頁面與草稿
+/// 前端每次換頁／輸入時回報：是否停在主畫面以外（失焦不收起），以及未送出的回報草稿
 #[tauri::command]
 pub(crate) fn panel_state_set(sticky: bool, draft: Option<String>) {
     crate::tray::PANEL_STICKY.store(sticky, std::sync::atomic::Ordering::SeqCst);
@@ -125,7 +125,7 @@ pub(crate) fn panel_draft_get() -> Option<String> {
     crate::tray::PANEL_DRAFT.lock().unwrap().clone()
 }
 
-/// 標題列的 ✕：收起面板（草稿留在記憶體，下次打開回到同一頁）
+/// 標題列的 ✕：收起面板（草稿留在記憶體，下次進回報頁還在）
 #[tauri::command]
 pub(crate) fn panel_close(app: AppHandle) {
     let h = app.clone();

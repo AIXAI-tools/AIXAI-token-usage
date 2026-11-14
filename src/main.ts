@@ -27,7 +27,7 @@ import {
 import { getClaudeStatusline } from "./views/claudeStatus";
 import { dismissModelChange, getModelWatch, reportModelChange, type ModelWatchState } from "./views/modelWatch";
 import { bindFeatureEvents, type FeatureState } from "./featureEvents";
-import { createPanel } from "./panel";
+import { createPanel, hasDraft } from "./panel";
 
 applyLang(dict === zhTW);
 let showUsed = load<boolean>("showUsed", false);
@@ -58,7 +58,7 @@ async function openUpdate() {
 }
 
 function applyDots() {
-  $("gear-dot").hidden = !(upd?.has_update || reportUnread);
+  $("gear-dot").hidden = !(upd?.has_update || reportUnread || hasDraft(rep));
 }
 
 function renderReport() {
@@ -66,12 +66,15 @@ function renderReport() {
 }
 
 async function openReport(ref: ReportDto | null = null) {
+  // 有沒送出的草稿就接著寫：同一則回覆、或從「回報」按鈕回來時都保留
   if (ref) {
-    rep = newForm();
-    rep.ref = ref.id;
-    rep.title = `Re: ${ref.title}`.slice(0, 100);
-    mwReportPending = false;
-  } else if (rep.ref || rep.doneId) {
+    if (rep.ref === ref.id && hasDraft(rep)) { /* 同一則回覆的草稿 */ } else {
+      rep = newForm();
+      rep.ref = ref.id;
+      rep.title = `Re: ${ref.title}`.slice(0, 100);
+      mwReportPending = false;
+    }
+  } else if ((rep.ref || rep.doneId) && !hasDraft(rep)) {
     rep = newForm();
     mwReportPending = false;
   }
@@ -116,7 +119,7 @@ async function openReports() {
 }
 
 function renderSettings() {
-  renderSettingsView({ settings, upd, reportUnread, addPlatform, addHint, detectMsg, ...ext });
+  renderSettingsView({ settings, upd, reportUnread: reportUnread || hasDraft(rep), addPlatform, addHint, detectMsg, ...ext });
 }
 
 async function loadHint() {
@@ -193,7 +196,7 @@ bindMainEvents({
 });
 
 bindSettingsEvents(
-  () => ({ settings, upd, reportUnread, addPlatform, addHint, detectMsg, ...ext }),
+  () => ({ settings, upd, reportUnread: reportUnread || hasDraft(rep), addPlatform, addHint, detectMsg, ...ext }),
   {
     setSettings: (s) => { settings = s; },
     setAddPlatform: (p) => { addPlatform = p; },
@@ -252,18 +255,11 @@ const panel = createPanel({
   getView: () => view,
   getRep: () => rep,
   getMwPending: () => mwReportPending,
-  restore: async (d) => {
-    if (d.view === "settings") await openSettings();
-    else if (d.view === "update") await openUpdate();
-    else if (d.view === "reports") await openReports();
-    else if (d.view === "report") {
-      rep = { ...newForm(), ...(d.rep ?? {}) };
-      mwReportPending = !!d.mwReportPending;
-      prep = await invoke<Prepare>("report_prepare").catch(() => prep);
-      view = "report";
-      render();
-    }
+  restore: (d) => {
+    rep = { ...newForm(), ...d.rep };
+    mwReportPending = !!d.mwReportPending;
   },
+  onDraftChange: () => { applyDots(); if (view === "settings") renderSettings(); },
 });
 
 async function syncSettings() {
@@ -288,12 +284,12 @@ void getClaudeStatusline().then((cs) => { if (cs) { ext.claudeStatus = cs; if (v
 invoke<Snapshot>("get_snapshot").then((s) => { snapshot = s; render(); }).catch(() => render());
 void syncSettings().then(async () => {
   // 測試用：AITOKEN_START_VIEW=settings 直接進設定頁
+  await panel.start(); // 只放回回報草稿，頁面一律從主畫面開始
   const sv0 = await invoke<string>("start_view").catch(() => "");
   if (sv0 === "settings") await openSettings();
   else if (sv0 === "update") await openUpdate();
   else if (sv0 === "report") { await invoke("capture_panel_shot").catch(() => {}); await openReport(); }
   else if (sv0 === "reports") await openReports();
-  panel.start(!sv0);
 });
 // 重置倒數每 30 秒重畫一次（不重新查詢）
 setInterval(() => { if (view === "main") render(); }, 30_000);

@@ -120,7 +120,7 @@
   "report.hide": "Hide",
   "report.send": "Send",
   "report.sending": "Sending… (up to 3 tries)",
-  "panel.close": "Close (reopens on this page)",
+  "panel.close": "Close",
   "report.copy": "Copy content",
   "report.copied": "Copied",
   "report.privacy": "Reports are emailed to the developer and kept in the developer's Google account (not public). If you tick \"Receive the developer's reply\", the app periodically looks up replies by report ID only, for up to 90 days. If sending fails, copy the content and use another channel.",

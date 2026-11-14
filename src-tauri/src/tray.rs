@@ -60,7 +60,7 @@ pub(crate) fn place_panel(win: &WebviewWindow) {
 pub(crate) static PANEL_PENDING: AtomicBool = AtomicBool::new(false);
 /// 主畫面以外的頁面（設定、回報…）：點面板外面不收起，改用標題列的 ✕
 pub(crate) static PANEL_STICKY: AtomicBool = AtomicBool::new(false);
-/// 面板銷毀後要還原的頁面與未送出內容（前端的 JSON，只放記憶體，結束程式就清掉）
+/// 未送出的回報草稿（前端的 JSON，只放記憶體，結束程式就清掉）；重開面板一律從主畫面開始
 pub(crate) static PANEL_DRAFT: Mutex<Option<String>> = Mutex::new(None);
 
 /// 失焦時要不要收起：建立中不算、停在主畫面以外的頁面不收
