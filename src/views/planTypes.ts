@@ -1,0 +1,13 @@
+export type ProviderId = "claude" | "codex" | "antigravity";
+export type PoolStatus = { kind: "learning" | "short" | "short_credit" | "more" | "ok"; value?: number };
+export type Outlook = { kind: "learning" | "early" | "leftover" | "even"; at?: number; value?: number };
+export type DetailCredit = { kind: string; model: string | null; expires_at: number | null; hint: string; refund: number | null; refill_five_hour: boolean; week_index?: number | null; manual_id: string | null; account: string | null; used_at: number | null };
+export type PlanView = {
+  now: number;
+  pools: { provider: ProviderId; target_today: number; target_without_credits: number; used_today: number; feasible: boolean; waste_estimate: number | null; use_now: string[]; status: PoolStatus; pace: number | null }[];
+  todos: { kind: string; provider: ProviderId; account_label: string | null; credit_kind?: string; model?: string; expires_at?: number | null; value?: number | null; refund?: number | null; url: string | null }[];
+  rows: { provider: ProviderId; group: string; account_id: string; label: string; state: "live" | "offline" | "exhausted"; five_left: number | null; five_resets_at: number | null; weekly_left: number; weekly_resets_at: number; credits: number; recommended: boolean; detail: null | { account_masked: string; note_key: string; as_of: number; models: { family: string; percent_of_week: number }[]; credits: DetailCredit[]; outlook: Outlook } }[];
+  plan: { daily: { provider: ProviderId; days: { day: number; used: number | null }[] }[]; lanes: { provider: ProviderId; label: string; cells: { base: number; credits: number }[] }[]; headroom: { provider: ProviderId; percent: number }[] };
+  manual_credits: { id: string; provider: string; kind: string; model: string | null; max_refund_percent: number | null; refill_five_hour: boolean; expires_at: number | null; accounts: string[]; used_by: string[] }[];
+  claude_accounts: { email: string; label: string }[];
+};

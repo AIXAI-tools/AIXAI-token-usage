@@ -29,3 +29,4 @@ release/
 
 # 使用者回報（/check-reports 下載，含使用者資料，不進版控）
 bug report/
+docs/ai/reports/*.local.json

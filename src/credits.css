@@ -1,0 +1,187 @@
+/* 重置券登錄與目標設定（配合 src/style.css 顏色變數） */
+.cr-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cr-toggles {
+  display: flex;
+  flex-direction: column;
+}
+
+.cr-toggles .srow {
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+}
+
+.cr-toggles .srow:first-child {
+  border-top: 0;
+}
+
+.cr-toggles .srow small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+.cr-subh {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.cr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cr-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cr-seg {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.cr-seg-btn {
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid var(--btn-line);
+  background: var(--btn);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cr-seg-btn:hover {
+  background: var(--hover);
+}
+
+.cr-seg-btn.on {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+  font-weight: 600;
+}
+
+.cr-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.cr-in {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--btn-line);
+  background: var(--btn);
+  color: var(--text);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  user-select: text;
+}
+
+.cr-in:focus {
+  outline: 2px solid var(--blue);
+  outline-offset: -1px;
+}
+
+.cr-pct {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cr-pct .cr-in {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cr-pct span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cr-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.cr-chk input {
+  accent-color: var(--blue);
+  margin: 0;
+}
+
+.cr-accts {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 20px;
+}
+
+.cr-acct-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cr-err {
+  font-size: 12px;
+  color: var(--red);
+}
+
+.cr-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cr-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.cr-it {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.cr-it-info {
+  min-width: 0;
+}
+
+.cr-it-info small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+.cr-it-acts {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.cr-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 0;
+}

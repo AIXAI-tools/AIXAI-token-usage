@@ -2,6 +2,7 @@
 // 安全：本程式不讀 Codex 的任何憑證檔，登入與連線全部由 codex 自己處理；
 //       只允許呼叫白名單內的唯讀方法。
 use crate::model::{mask_email, now_epoch, Provider, Reason, UsageWindow, WindowLabel};
+use crate::plan_types::ResetCredit;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -26,18 +27,38 @@ pub fn list_models(dir: Option<&Path>) -> Result<Vec<crate::models::ModelEntry>,
 
 /// dir＝None 用預設的 ~/.codex；額外帳號傳入 CODEX_HOME 資料夾
 pub fn fetch(dir: Option<&Path>) -> Provider {
+    let (p, credits) = fetch_full(dir);
+    // 只有即時查到時才更新券清單（走本機紀錄備援時沿用上一次的）
+    if p.source.as_deref() == Some("live") {
+        let account = p.account_full.clone().unwrap_or_default().to_lowercase();
+        let mut all = LAST_CREDITS.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|c| c.account != account);
+        all.extend(credits);
+    }
+    p
+}
+
+static LAST_CREDITS: std::sync::Mutex<Vec<ResetCredit>> = std::sync::Mutex::new(Vec::new());
+
+/// 最近一次即時查詢讀到的重置券（所有 Codex 帳號）
+pub fn last_credits() -> Vec<ResetCredit> {
+    LAST_CREDITS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// 讀取既有額度資料，並從同一個唯讀回應取得可用重置券。
+pub fn fetch_full(dir: Option<&Path>) -> (Provider, Vec<ResetCredit>) {
     match fetch_live(dir) {
-        Ok(p) => p,
+        Ok(result) => result,
         Err(reason) => {
             // 未登入／API 金鑰模式時，本機紀錄沒有意義，直接回報
             if reason.key != "not_logged_in" && reason.key != "api_key_mode" {
                 if let Some(p) = fetch_local_log(dir) {
-                    return p;
+                    return (p, Vec::new());
                 }
             }
             let mut p = Provider::placeholder("codex", "unavailable");
             p.reason = Some(reason);
-            p
+            (p, Vec::new())
         }
     }
 }
@@ -154,7 +175,7 @@ impl Drop for Rpc {
     }
 }
 
-fn fetch_live(dir: Option<&Path>) -> Result<Provider, Reason> {
+fn fetch_live(dir: Option<&Path>) -> Result<(Provider, Vec<ResetCredit>), Reason> {
     // 額外帳號：只檢查登入檔「是否存在」，不讀內容
     if dir.is_some_and(|d| !d.join("auth.json").is_file()) {
         return Err(Reason::new("not_logged_in"));
@@ -169,7 +190,7 @@ fn fetch_live(dir: Option<&Path>) -> Result<Provider, Reason> {
     let email = match account.get("type").and_then(Value::as_str) {
         None => return Err(Reason::new("not_logged_in")),
         Some("apiKey") => return Err(Reason::new("api_key_mode")),
-        Some(_) => account.get("email").and_then(Value::as_str).map(str::to_string),
+        Some(_) => account.get("email").and_then(Value::as_str).map(|s| s.to_lowercase()),
     };
 
     let limits = rpc.call(3, "account/rateLimits/read", Value::Null)?;
@@ -183,7 +204,32 @@ fn fetch_live(dir: Option<&Path>) -> Result<Provider, Reason> {
     p.account_masked = email.as_deref().map(mask_email);
     p.account_full = email;
     p.windows = windows;
-    Ok(p)
+    let account_email = p.account_full.as_deref().unwrap_or("");
+    let credits = parse_reset_credits(&limits, account_email);
+    Ok((p, credits))
+}
+
+/// 解析 account/rateLimits/read 的可用重置券。
+pub fn parse_reset_credits(v: &Value, account: &str) -> Vec<ResetCredit> {
+    v.get("rateLimitResetCredits")
+        .and_then(|v| v.get("credits"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|credit| credit.get("status").and_then(Value::as_str) == Some("available"))
+        .map(|credit| ResetCredit {
+            id: credit.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
+            provider: "codex".into(),
+            account: account.to_lowercase(),
+            kind: "full".into(),
+            model: None,
+            max_refund_percent: None,
+            refill_five_hour: true,
+            expires_at: credit.get("expiresAt").and_then(Value::as_i64),
+            source: "auto".into(),
+            title: credit.get("title").and_then(Value::as_str).map(str::to_string),
+        })
+        .collect()
 }
 
 /// 解析 app-server 回應（camelCase）。優先用多額度桶 rateLimitsByLimitId。
@@ -345,5 +391,29 @@ mod tests {
     fn blocks_methods_outside_whitelist() {
         assert!(!ALLOWED_METHODS.contains(&"account/logout"));
         assert!(!ALLOWED_METHODS.contains(&"account/rateLimitResetCredit/consume"));
+    }
+
+    #[test]
+    fn parses_available_reset_credits_and_ignores_missing_data() {
+        let v = json!({"rateLimits": {}, "rateLimitResetCredits": {"availableCount": 3, "credits": [
+            {"id":"rc_1", "status":"available", "resetType":"codexRateLimits", "grantedAt":1793000000,
+             "expiresAt":1796070300, "title":"Full reset (Weekly + 5 hr)", "description":null},
+            {"id":"rc_2", "status":"consumed", "expiresAt":1796070300}
+        ]}});
+        let credits = parse_reset_credits(&v, "USER@Example.COM");
+        assert_eq!(credits.len(), 1);
+        let c = &credits[0];
+        assert_eq!(c.id, "rc_1");
+        assert_eq!(c.provider, "codex");
+        assert_eq!(c.account, "user@example.com");
+        assert_eq!(c.kind, "full");
+        assert!(c.refill_five_hour);
+        assert_eq!(c.source, "auto");
+        assert_eq!(c.expires_at, Some(1796070300));
+        assert_eq!(c.title.as_deref(), Some("Full reset (Weekly + 5 hr)"));
+        for empty in [json!({}), json!({"rateLimitResetCredits":null}),
+            json!({"rateLimitResetCredits":{"credits":null}})] {
+            assert!(parse_reset_credits(&empty, "a@example.com").is_empty());
+        }
     }
 }

@@ -72,6 +72,7 @@ pub(crate) fn do_refresh(app: &AppHandle) -> Snapshot {
     };
     state.refreshing.store(false, Ordering::SeqCst);
     crate::terminal::write_now(app); // Claude Code 狀態列後面接的 Codex／agy 額度
+    crate::planview::on_refresh(app, &snap.providers); // 重置券、每日目標、模型用量
     update_tray(app, &snap);
     let _ = app.emit_to(PANEL, "snapshot", snap.clone());
     snap

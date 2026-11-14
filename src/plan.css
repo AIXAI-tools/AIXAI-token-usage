@@ -1,0 +1,79 @@
+.plan-sec { border-top: 1px solid var(--line); padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 7px; color: var(--text); }
+.plan-sec h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); }
+.plan-today { display: grid; grid-template-columns: 92px minmax(50px, 1fr) 96px; align-items: center; gap: 8px; font-size: 12px; }
+.plan-name { white-space: nowrap; }
+.plan-track, .plan-week-track { display: block; height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.plan-track > span, .plan-week-track > span { display: block; height: 100%; border-radius: inherit; background: #e7a247; }
+.plan-track > .is-good { background: #34a853; }
+.plan-value, .plan-week-value, .plan-five, .plan-reset, .plan-credits { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.plan-use, .plan-headroom { color: var(--muted); font-size: 12px; margin: 0; }
+.plan-todo { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 6px; background: color-mix(in srgb, #e7a247 12%, var(--bg)); font-size: 12px; }
+.plan-todo a { white-space: nowrap; color: #3978c5; }
+.plan-columns, .plan-account { display: grid; grid-template-columns: 10px 80px 50px minmax(48px, 1fr) 40px 52px 30px; align-items: center; gap: 6px; }
+.plan-columns { color: var(--muted); }
+.plan-account { width: 100%; border: 0; padding: 5px 4px; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; }
+.plan-account:not(:disabled) { cursor: pointer; }
+.plan-account.recommended { background: color-mix(in srgb, #34a853 12%, var(--bg)); }
+.plan-dot { width: 7px; height: 7px; border-radius: 50%; background: #34a853; }
+.plan-dot.offline { background: #89919c; }
+.plan-dot.exhausted { background: #df5b52; }
+.plan-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-label small { color: var(--muted); }
+.plan-five.low, .plan-week-value.low { color: #d98724; }
+.plan-week-track { height: 8px; }
+.plan-week-track > span { background: #468bd1; }
+.plan-week-track > span.is-warn { background: #d98724; }
+.plan-reset { color: var(--muted); font-size: 11px; }
+.plan-credits { color: var(--muted); }
+.plan-detail { display: flex; flex-direction: column; gap: 5px; padding: 6px 9px 8px 22px; color: var(--muted); font-size: 11px; }
+.plan-detail > div { display: flex; justify-content: space-between; gap: 8px; }
+.plan-detail-line > :last-child { text-align: right; }
+.plan-chart { height: 150px; position: relative; display: flex; align-items: end; justify-content: space-around; gap: 8px; padding: 4px 4px 20px; }
+.plan-bar-wrap { height: 100%; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: end; gap: 3px; z-index: 1; }
+.plan-bar-value, .plan-bar-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.plan-bar { width: min(28px, 70%); min-height: 2px; background: #468bd1; border-radius: 4px 4px 0 0; }
+.plan-bar.today { background: #34a853; }
+.plan-bar.none { height: 14px; background: none; border: 1px dashed var(--line); border-bottom: 0; }
+.plan-track.pace { position: relative; overflow: visible; height: 8px; }
+.plan-track.pace > span { border-radius: 99px; }
+.plan-track.pace > i { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
+.plan-use { padding-left: 100px; }
+.plan-use b { color: #34a853; font-weight: 600; }
+.plan-use .is-short { color: #df5b52; font-weight: 600; }
+.plan-use .is-more, .plan-use .is-short_credit { color: #d98724; }
+.plan-use .is-learning { color: var(--muted); }
+/* 5 小時：百分比在上、補滿倒數在下，不壓到右邊的進度條 */
+.plan-five { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.05; }
+/* 帳號表擠緊：列之間不留間距 */
+.plan-accounts { gap: 0; }
+.plan-accounts .plan-account { padding: 2px 4px; min-height: 22px; }
+.plan-accounts .plan-columns { margin-bottom: 2px; }
+.plan-group { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; margin-top: 6px; padding: 2px 4px; border: 0; border-radius: 5px; background: none; color: var(--muted); font: inherit; font-size: 11px; font-weight: 600; text-align: left; cursor: pointer; }
+.plan-group:hover { background: var(--hover); }
+.plan-group-sum { font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-five small { font-size: 10px; font-weight: 400; color: var(--muted); }
+.plan-used { text-decoration: line-through; }
+.plan-detail-line { align-items: center; }
+.plan-mini { padding: 1px 7px; font-size: 11px; cursor: pointer; }
+.plan-goal-line { position: absolute; left: 0; right: 0; border-top: 1px dashed #d98724; z-index: 0; }
+.plan-goal-line span { position: absolute; right: 0; top: -15px; color: #d98724; font-size: 10px; background: var(--bg); }
+.plan-lane-head, .plan-lane { display: grid; grid-template-columns: 64px 1fr; gap: 6px; align-items: center; font-size: 10px; }
+.plan-lane-head > :last-child, .plan-cells { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; text-align: center; }
+.plan-lane-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-cells > span { padding: 6px 2px; border-radius: 5px; background: color-mix(in srgb, var(--line) 55%, var(--bg)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-cells > .has-credit { background: color-mix(in srgb, #468bd1 16%, var(--bg)); }
+@media (max-width: 380px) { .plan-columns, .plan-account { grid-template-columns: 8px minmax(48px, 1fr) 42px minmax(34px, .8fr) 34px 42px 25px; gap: 3px; font-size: 10px; } }
+
+.plan-tabs { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+.plan-tabs button { border: 0; background: none; padding: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.plan-tabs button.on { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--blue); }
+#plan-settings .cr-it-acts { flex-wrap: wrap; justify-content: flex-end; }
+.pl-row { display: grid; grid-template-columns: 52px repeat(4, 1fr); gap: 4px; align-items: center; font-size: 11px; margin-top: 4px; }
+.pl-head { color: var(--muted); text-align: center; }
+.pl-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.pl-cell { padding: 4px 2px; border-radius: 4px; background: var(--track); text-align: center; white-space: nowrap; color: var(--muted); }
+.pl-cell.has-credit { background: var(--orange); color: #000; font-weight: 600; }
+.pl-cell.empty { background: none; }
+.plan-columns > span:nth-child(3), .plan-columns > span:nth-child(6), .plan-columns > span:nth-child(7) { text-align: right; }
+.plan-columns > span:nth-child(4) { padding-left: 6px; }
+.plan-week-track { margin-left: 6px; }

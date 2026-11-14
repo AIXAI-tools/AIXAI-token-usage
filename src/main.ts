@@ -28,6 +28,7 @@ import { getClaudeStatusline, getTerminalLine } from "./views/claudeStatus";
 import { dismissModelChange, getModelWatch, reportModelChange, type ModelWatchState } from "./views/modelWatch";
 import { bindFeatureEvents, type FeatureState } from "./featureEvents";
 import { createPanel, hasDraft } from "./panel";
+import { startPlan } from "./planFeature";
 
 applyLang(dict === zhTW);
 let showUsed = load<boolean>("showUsed", false);
@@ -295,5 +296,7 @@ void syncSettings().then(async () => {
   else if (sv0 === "report") { await invoke("capture_panel_shot").catch(() => {}); await openReport(); }
   else if (sv0 === "reports") await openReports();
 });
+// 額度規劃：新版面板、計畫分頁、設定頁的重置券（planFeature.ts）
+startPlan({ getView: () => view, fit });
 // 重置倒數每 30 秒重畫一次（不重新查詢）
 setInterval(() => { if (view === "main") render(); }, 30_000);

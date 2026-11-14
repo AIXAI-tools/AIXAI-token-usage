@@ -5,10 +5,17 @@ mod claude;
 mod codex;
 mod commands;
 mod config;
+mod credits;
 mod feedback;
+mod history;
 mod model;
 mod models;
+mod modelusage;
 mod notify;
+mod plan_types;
+mod pace;
+mod planner;
+mod planview;
 mod refresh;
 mod reporting;
 mod reports;
@@ -81,7 +88,15 @@ pub fn run() {
             watch::set_model_watch,
             watch::check_models_now,
             watch::dismiss_model_change,
-            watch::report_model_change
+            watch::report_model_change,
+            planview::get_plan_view,
+            planview::get_plan_cfg,
+            planview::set_plan_cfg,
+            planview::add_manual_credit,
+            planview::remove_manual_credit,
+            planview::mark_credit_used,
+            planview::unmark_credit_used,
+            planview::open_usage_page
         ])
         .setup(|app| {
             // 設定與快取資料夾
