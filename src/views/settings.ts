@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { $, esc, hhmm, t, type OfflineDto, type Settings, type UpdateState } from "../util";
+import { $, closeBtn, esc, hhmm, t, type OfflineDto, type Settings, type UpdateState } from "../util";
 import { settingsSectionHtml as claudeStatusSectionHtml, type ClaudeStatuslineState } from "./claudeStatus";
 import { settingsSectionHtml, type ModelWatchState } from "./modelWatch";
 
@@ -49,6 +49,7 @@ export function settingsHtml(s: Settings, st: SettingsState): string {
     <span class="title">${esc(t("settings.title"))}</span>
     <button id="to-update" class="pill" type="button">${esc(t("settings.update"))}${st.upd?.has_update ? '<i class="dot"></i>' : ""}</button>
     <button id="to-report" class="pill" type="button">${esc(t("settings.report"))}${st.reportUnread ? '<i class="dot"></i>' : ""}</button>
+    ${closeBtn()}
   </header>
   <div class="sbody">
     <section class="sec">

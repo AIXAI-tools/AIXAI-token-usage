@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { $, copyText, dict, esc, mmdd, t, type Prepare, type ReportDto, type ViewName } from "../util";
+import { $, closeBtn, copyText, dict, esc, mmdd, t, type Prepare, type ReportDto, type ViewName } from "../util";
 
 // 回報頁狀態（輸入內容存在這裡，重畫不會掉）
 export const newForm = () => ({
@@ -39,6 +39,7 @@ export function reportHtml(rep: ReportForm, prep: Prepare | null, reportUnread: 
     <button id="rp-back" class="icon-btn" type="button" aria-label="${esc(t("report.back_settings"))}" title="${esc(t("report.back_settings"))}">‹</button>
     <span class="title">${esc(rep.ref ? t("report.title_reply") : t("report.title"))}</span>
     <button id="rp-mine" class="pill" type="button">${esc(t("report.mine"))}${reportUnread ? '<i class="dot"></i>' : ""}</button>
+    ${closeBtn()}
   </header>`;
   if (rep.doneId) {
     return `${head}<div class="upd"><div class="ok-text">${esc(t("report.done"))}</div>
@@ -105,10 +106,12 @@ export function reportsHtml(reports: ReportDto[], newReplyIds: Set<string>, repC
         const isNew = newReplyIds.has(p.rid);
         const kindTxt = t(`reports.kind.${p.kind}`);
         const urls = p.urls.length ? `<div class="urls">${p.urls.map((u) => esc(u)).join("<br>")}</div>` : "";
-        const fixed = p.kind === "fixed" && p.version
+        // 回覆的版本可能帶 v（例 v0.2.5），文字本身已有 v，先去掉避免顯示 vv0.2.5
+        const ver = (p.version ?? "").replace(/^[vV]/, "");
+        const fixed = p.kind === "fixed" && ver
           ? (p.can_update
-            ? `<button class="pill primary" type="button" data-upd="1">${esc(t("reports.update_to", { v: p.version }))}</button>`
-            : `<span class="msg">${esc(t("reports.fixed_in", { v: p.version }))}</span>`)
+            ? `<button class="pill primary" type="button" data-upd="1">${esc(t("reports.update_to", { v: ver }))}</button>`
+            : `<span class="msg">${esc(t("reports.fixed_in", { v: ver }))}</span>`)
           : "";
         return `<div class="reply"><span class="rhead">${esc(t("reports.reply_head", { kind: kindTxt }))}${isNew ? ` <b class="newtag">${esc(t("reports.new"))}</b>` : ""}</span>
           <span class="rtext">${esc(p.text)}</span>${urls}${fixed}</div>`;
@@ -125,6 +128,7 @@ export function reportsHtml(reports: ReportDto[], newReplyIds: Set<string>, repC
     <button id="rs-back" class="icon-btn" type="button" aria-label="${esc(t("report.back"))}" title="${esc(t("report.back"))}">‹</button>
     <span class="title">${esc(t("report.mine"))}</span>
     <button id="rs-check" class="pill" type="button" ${repChecking ? "disabled" : ""}>${esc(repChecking ? t("reports.checking") : t("reports.recheck"))}</button>
+    ${closeBtn()}
   </header>
   <div class="sbody">${items || `<div class="sec"><span class="msg">${esc(t("reports.empty"))}</span></div>`}</div>`;
 }

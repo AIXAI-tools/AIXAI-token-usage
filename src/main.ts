@@ -24,20 +24,10 @@ import {
   renderReports as renderReportsView,
   type ReportForm,
 } from "./views/report";
-import {
-  getClaudeStatusline,
-  installClaudeStatusline,
-  setClaudeStatuslineShow,
-  type ClaudeStatuslineState,
-} from "./views/claudeStatus";
-import {
-  checkModelsNow,
-  dismissModelChange,
-  getModelWatch,
-  reportModelChange,
-  setModelWatch,
-  type ModelWatchState,
-} from "./views/modelWatch";
+import { getClaudeStatusline } from "./views/claudeStatus";
+import { dismissModelChange, getModelWatch, reportModelChange, type ModelWatchState } from "./views/modelWatch";
+import { bindFeatureEvents, type FeatureState } from "./featureEvents";
+import { createPanel } from "./panel";
 
 applyLang(dict === zhTW);
 let showUsed = load<boolean>("showUsed", false);
@@ -57,12 +47,9 @@ let prep: Prepare | null = null;
 let reports: ReportDto[] = [];
 let newReplyIds = new Set<string>();
 let repChecking = false;
-let modelWatch: ModelWatchState | null = null;
-let mwChecking = false;
 let mwReportPending = false;
-let claudeStatus: ClaudeStatuslineState | null = null;
-let csInstalling: string | null = null;
-let csFailed: { id: string; error: string } | null = null;
+// Claude 狀態列、新模型偵測的狀態（事件在 featureEvents.ts）
+const ext: FeatureState = { claudeStatus: null, csInstalling: null, csFailed: null, modelWatch: null, mwChecking: false };
 
 async function openUpdate() {
   upd = await invoke<UpdateState>("get_update_state").catch(() => upd);
@@ -129,7 +116,7 @@ async function openReports() {
 }
 
 function renderSettings() {
-  renderSettingsView({ settings, upd, reportUnread, addPlatform, addHint, detectMsg, modelWatch, mwChecking, claudeStatus, csInstalling, csFailed });
+  renderSettingsView({ settings, upd, reportUnread, addPlatform, addHint, detectMsg, ...ext });
 }
 
 async function loadHint() {
@@ -139,7 +126,7 @@ async function loadHint() {
 async function openSettings() {
   settings = await invoke<Settings>("get_settings").catch(() => settings);
   detectMsg = "";
-  await Promise.all([loadHint(), getClaudeStatusline().then((cs) => { if (cs) claudeStatus = cs; })]);
+  await Promise.all([loadHint(), getClaudeStatusline().then((cs) => { if (cs) ext.claudeStatus = cs; })]);
   view = "settings";
   $("view-settings").innerHTML = ""; // 重新打開時從最上面開始（不沿用上次的捲動位置）
   render();
@@ -168,6 +155,7 @@ function render() {
   $("view-report").hidden = view !== "report";
   $("view-reports").hidden = view !== "reports";
   applyDots();
+  panel.sync();
   if (view === "report") {
     renderReport();
     fit();
@@ -188,7 +176,7 @@ function render() {
     fit();
     return;
   }
-  renderMain(snapshot, showUsed, collapsed, modelWatch, csInstalling, csFailed);
+  renderMain(snapshot, showUsed, collapsed, ext.modelWatch, ext.csInstalling, ext.csFailed);
   fit();
 }
 
@@ -205,7 +193,7 @@ bindMainEvents({
 });
 
 bindSettingsEvents(
-  () => ({ settings, upd, reportUnread, addPlatform, addHint, detectMsg, modelWatch, mwChecking, claudeStatus, csInstalling, csFailed }),
+  () => ({ settings, upd, reportUnread, addPlatform, addHint, detectMsg, ...ext }),
   {
     setSettings: (s) => { settings = s; },
     setAddPlatform: (p) => { addPlatform = p; },
@@ -237,13 +225,14 @@ bindReportEvents(
     openReport,
     openUpdate,
     onReportSent: () => {
+      panel.sync(); // 送出成功後草稿換成「已送出」畫面，避免重開又送一次
       if (!mwReportPending) return;
       mwReportPending = false;
       void (async () => {
-        const mw = modelWatch ?? await getModelWatch();
+        const mw = ext.modelWatch ?? await getModelWatch();
         for (const c of mw?.pending ?? []) {
           const next = await dismissModelChange(c.platform);
-          if (next) modelWatch = next;
+          if (next) ext.modelWatch = next;
         }
         if (view === "main" || view === "settings") render();
       })();
@@ -251,69 +240,30 @@ bindReportEvents(
   },
 );
 
-function runClaudeInstall(id: string) {
-  if (csInstalling) return;
-  csInstalling = id;
-  csFailed = null;
-  render();
-  void installClaudeStatusline(id)
-    .then((cs) => {
-      if ("error" in cs) { csFailed = { id, error: cs.error }; return; }
-      claudeStatus = cs;
-      return invoke<Snapshot>("refresh").then((s) => { snapshot = s; }).catch(() => {});
-    })
-    .finally(() => {
-      csInstalling = null;
-      if (view === "main" || view === "settings") render();
-    });
-}
-
-$("groups").addEventListener("click", (e) => {
-  const el = e.target as HTMLElement;
-  const csBtn = el.closest<HTMLElement>("[data-cs-install]");
-  if (csBtn?.dataset.csInstall) {
-    runClaudeInstall(csBtn.dataset.csInstall);
-    return;
-  }
-  if (el.closest("[data-mw-report]")) {
-    void openModelReport();
-    return;
-  }
-  const dis = el.closest<HTMLElement>("[data-mw-dismiss]");
-  if (dis?.dataset.mwDismiss) {
-    void dismissModelChange(dis.dataset.mwDismiss).then((mw) => {
-      if (mw) { modelWatch = mw; if (view === "main") render(); }
-    });
-  }
+bindFeatureEvents(ext, {
+  getView: () => view,
+  render,
+  setSnapshot: (s) => { snapshot = s; },
+  openModelReport,
 });
 
-$("view-settings").addEventListener("click", (e) => {
-  const el = e.target as HTMLElement;
-  const csBtn = el.closest<HTMLElement>("[data-cs-install]");
-  if (csBtn?.dataset.csInstall) {
-    runClaudeInstall(csBtn.dataset.csInstall);
-    return;
-  }
-  if (!el.closest("#mw-check") || mwChecking) return;
-  mwChecking = true;
-  render();
-  void checkModelsNow().then((mw) => {
-    if (mw) modelWatch = mw;
-  }).finally(() => {
-    mwChecking = false;
-    if (view === "settings" || view === "main") render();
-  });
-});
-
-$("view-settings").addEventListener("change", (e) => {
-  const el = e.target as HTMLInputElement;
-  if (el.id === "cs-show") {
-    void setClaudeStatuslineShow(el.checked).then((cs) => { if (cs) claudeStatus = cs; });
-  } else if (el.id === "mw-enabled") {
-    void setModelWatch({ enabled: el.checked }).then((mw) => { if (mw) modelWatch = mw; });
-  } else if (el.id === "mw-auto") {
-    void setModelWatch({ auto_send: el.checked }).then((mw) => { if (mw) modelWatch = mw; });
-  }
+// 面板收起與還原（panel.ts）：放在 bindReportEvents 之後，回報表單先更新內容、草稿才同步到最新
+const panel = createPanel({
+  getView: () => view,
+  getRep: () => rep,
+  getMwPending: () => mwReportPending,
+  restore: async (d) => {
+    if (d.view === "settings") await openSettings();
+    else if (d.view === "update") await openUpdate();
+    else if (d.view === "reports") await openReports();
+    else if (d.view === "report") {
+      rep = { ...newForm(), ...(d.rep ?? {}) };
+      mwReportPending = !!d.mwReportPending;
+      prep = await invoke<Prepare>("report_prepare").catch(() => prep);
+      view = "report";
+      render();
+    }
+  },
 });
 
 async function syncSettings() {
@@ -331,10 +281,10 @@ listen<boolean>("reports-changed", (e) => { reportUnread = e.payload; applyDots(
 invoke<boolean>("report_unread").then((u) => { reportUnread = u; applyDots(); }).catch(() => {});
 listen<UpdateState>("update-state", (e) => { upd = e.payload; render(); });
 invoke<UpdateState>("get_update_state").then((s) => { upd = s; if (view === "main") applyDots(); }).catch(() => {});
-listen<ModelWatchState>("model-watch", (e) => { modelWatch = e.payload; if (view === "main" || view === "settings") render(); });
+listen<ModelWatchState>("model-watch", (e) => { ext.modelWatch = e.payload; if (view === "main" || view === "settings") render(); });
 listen("open-model-report", () => { void openModelReport(); });
-void getModelWatch().then((mw) => { if (mw) { modelWatch = mw; if (view === "main" || view === "settings") render(); } });
-void getClaudeStatusline().then((cs) => { if (cs) { claudeStatus = cs; if (view === "settings") render(); } });
+void getModelWatch().then((mw) => { if (mw) { ext.modelWatch = mw; if (view === "main" || view === "settings") render(); } });
+void getClaudeStatusline().then((cs) => { if (cs) { ext.claudeStatus = cs; if (view === "settings") render(); } });
 invoke<Snapshot>("get_snapshot").then((s) => { snapshot = s; render(); }).catch(() => render());
 void syncSettings().then(async () => {
   // 測試用：AITOKEN_START_VIEW=settings 直接進設定頁
@@ -343,6 +293,7 @@ void syncSettings().then(async () => {
   else if (sv0 === "update") await openUpdate();
   else if (sv0 === "report") { await invoke("capture_panel_shot").catch(() => {}); await openReport(); }
   else if (sv0 === "reports") await openReports();
+  panel.start(!sv0);
 });
 // 重置倒數每 30 秒重畫一次（不重新查詢）
 setInterval(() => { if (view === "main") render(); }, 30_000);

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { $, dict, esc, hhmm, t, type UpdateState, type ViewName } from "../util";
+import { $, closeBtn, dict, esc, hhmm, t, type UpdateState, type ViewName } from "../util";
 
 export function failText(key: string): string {
   const k = `update.err.${key}`;
@@ -36,6 +36,7 @@ export function updateHtml(u: UpdateState): string {
   <header class="head">
     <button id="back-settings" class="icon-btn" type="button" aria-label="${esc(t("update.back"))}" title="${esc(t("update.back"))}">‹</button>
     <span class="title">${esc(t("update.title"))}</span>
+    ${closeBtn()}
   </header>
   <div class="upd">
     <div class="kv"><span class="k">${esc(t("update.current"))}</span><span class="v">v${esc(u.current)}</span></div>

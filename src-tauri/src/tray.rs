@@ -4,6 +4,7 @@ use crate::refresh::refresh_soon;
 use crate::state::{zh_of, AppState, MenuItems};
 use crate::ring;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -57,6 +58,15 @@ pub(crate) fn place_panel(win: &WebviewWindow) {
 
 /// 面板已建立、但內容還沒畫好（尚未顯示）
 pub(crate) static PANEL_PENDING: AtomicBool = AtomicBool::new(false);
+/// 主畫面以外的頁面（設定、回報…）：點面板外面不收起，改用標題列的 ✕
+pub(crate) static PANEL_STICKY: AtomicBool = AtomicBool::new(false);
+/// 面板銷毀後要還原的頁面與未送出內容（前端的 JSON，只放記憶體，結束程式就清掉）
+pub(crate) static PANEL_DRAFT: Mutex<Option<String>> = Mutex::new(None);
+
+/// 失焦時要不要收起：建立中不算、停在主畫面以外的頁面不收
+pub(crate) fn closes_on_blur(pending: bool, sticky: bool) -> bool {
+    !pending && !sticky
+}
 
 pub(crate) fn toggle_panel(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(PANEL) {
@@ -76,6 +86,7 @@ pub(crate) fn toggle_panel(app: &AppHandle) {
 
 pub(crate) fn open_panel(app: &AppHandle) {
     PANEL_PENDING.store(true, Ordering::SeqCst);
+    PANEL_STICKY.store(false, Ordering::SeqCst); // 前端還原頁面後會再設定
     let built = WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("index.html".into()))
         .title("AIXAI Token Usage")
         .inner_size(PANEL_WIDTH, 420.0)
@@ -96,8 +107,9 @@ pub(crate) fn open_panel(app: &AppHandle) {
     };
     let handle = app.clone();
     win.on_window_event(move |e| {
-        // 顯示前（建立過程）的失焦不算
-        if matches!(e, WindowEvent::Focused(false)) && !PANEL_PENDING.load(Ordering::SeqCst) {
+        if matches!(e, WindowEvent::Focused(false))
+            && closes_on_blur(PANEL_PENDING.load(Ordering::SeqCst), PANEL_STICKY.load(Ordering::SeqCst))
+        {
             let h = handle.clone();
             let _ = handle.run_on_main_thread(move || close_panel(&h));
         }
@@ -235,4 +247,16 @@ pub(crate) fn build_tray(app: &mut tauri::App, zh: bool, lang: &str) -> tauri::R
         })
         .build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blur_closes_only_main_view_after_shown() {
+        assert!(closes_on_blur(false, false)); // 主畫面：點外面收起
+        assert!(!closes_on_blur(false, true)); // 設定、回報…：點外面不收
+        assert!(!closes_on_blur(true, false)); // 建立中的失焦不算
+    }
 }

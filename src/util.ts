@@ -118,3 +118,8 @@ export function copyText(text: string, done: () => void) {
     ta.remove();
   });
 }
+
+/** 主畫面以外的頁面標題列最右邊的 ✕（點面板外面不會收起，要用這顆關） */
+export function closeBtn(): string {
+  return `<button class="icon-btn" type="button" data-close="1" aria-label="${esc(t("panel.close"))}" title="${esc(t("panel.close"))}">✕</button>`;
+}
