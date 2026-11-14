@@ -17,6 +17,7 @@ mod shot;
 mod snapshot;
 mod state;
 mod statusline;
+mod terminal;
 mod tray;
 mod update;
 mod updater;
@@ -45,6 +46,8 @@ pub fn run() {
             statusline::get_claude_statusline,
             statusline::install_claude_statusline,
             statusline::set_claude_statusline_show,
+            terminal::get_terminal_line,
+            terminal::set_terminal_line,
             commands::get_snapshot,
             commands::refresh,
             commands::panel_resize,

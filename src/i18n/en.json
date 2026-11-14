@@ -192,6 +192,12 @@
   "cs.state_not_installed": "Not configured",
   "cs.show_label": "Show quota in terminal",
   "cs.show_hint": "Still saves data for AItoken when turned off",
+  "cs.term_title": "Show in terminal",
+  "cs.term_both": "5h, weekly",
+  "cs.term_week_only": "weekly",
+  "cs.term_num": "Numbers",
+  "cs.term_left": "Left",
+  "cs.term_used": "Used",
   "cs.fail": "Setup failed, please try again",
   "cs.fail_invalid": "Claude Code settings.json is not valid JSON, nothing was changed; fix it and try again"
 }

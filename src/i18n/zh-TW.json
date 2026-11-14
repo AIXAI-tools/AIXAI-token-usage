@@ -193,5 +193,11 @@
   "cs.show_label": "在終端機顯示額度",
   "cs.show_hint": "關掉後仍會存檔給 AItoken",
   "cs.fail": "設定失敗，請再試一次",
+  "cs.term_title": "終端機要顯示哪些",
+  "cs.term_both": "5 小時、每週",
+  "cs.term_week_only": "每週",
+  "cs.term_num": "數字顯示",
+  "cs.term_left": "剩餘",
+  "cs.term_used": "已用",
   "cs.fail_invalid": "Claude Code 的 settings.json 格式有誤，沒有修改；請先修好再按一次"
 }

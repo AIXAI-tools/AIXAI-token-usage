@@ -1,6 +1,6 @@
 [package]
 name = "aixai-token-usage"
-version = "0.2.7"
+version = "0.2.8"
 description = "AIXAI Token Usage — 系統匣額度監看小工具"
 edition = "2021"
 

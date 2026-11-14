@@ -338,10 +338,18 @@ mod tests {
 
     #[cfg(windows)]
     fn run_script(app: &Path, dir: &Path, raw: &str) -> String {
+        run_script_cols(app, dir, raw, None)
+    }
+
+    #[cfg(windows)]
+    fn run_script_cols(app: &Path, dir: &Path, raw: &str, cols: Option<u32>) -> String {
         use std::process::{Command, Stdio};
         let home = app.parent().unwrap().join("fake-home");
         fs::create_dir_all(&home).unwrap();
-        let mut child = Command::new("powershell.exe")
+        let mut cmd = Command::new("powershell.exe");
+        cmd.env_remove("COLUMNS");
+        if let Some(c) = cols { cmd.env("COLUMNS", c.to_string()); }
+        let mut child = cmd
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(app.join("statusline.ps1")).arg("-Key").arg(key("claude:default"))
             .arg("-Dir").arg(dir).env("USERPROFILE", &home)
@@ -376,6 +384,62 @@ mod tests {
         // 同一路徑再寫一次，確認覆寫及缺窗口省略。
         assert_eq!(run_script(&app, &dir, r#"{"rate_limits":{"five_hour":{"used_percentage":0,"resets_at":null}}}"#).trim(), "Claude 5h 0%");
         assert!(read_json(&status_path(&app, "claude:default")).unwrap().get("seven_day").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn script_appends_terminal_line_fresh_or_stale() {
+        let (app, dir) = fixture();
+        install(&app, "claude:default", &dir).unwrap();
+        let raw = r#"{"rate_limits":{"five_hour":{"used_percentage":53,"resets_at":1},"seven_day":{"used_percentage":82.4,"resets_at":2}}}"#;
+        let mut line = json!({"v":1,"updated_at":crate::model::now_epoch(),"claude":true,"used":false,
+            "claude_label":"Claude 剩","l5":"5h","lw":"週","dot":"·","join":"｜","extra":"Codex 5h 87%","extra_stale":"OLD"});
+        fs::write(app.join("terminal-line.json"), line.to_string()).unwrap();
+        // 剩餘：47（綠）、18（黃，低於 30）
+        assert_eq!(run_script(&app, &dir, raw).trim(),
+            "Claude 剩 5h \x1b[32m47%\x1b[0m·週 \x1b[33m18%\x1b[0m｜Codex 5h 87%");
+        line["updated_at"] = json!(crate::model::now_epoch() - 901);
+        line["used"] = json!(true);
+        line["claude_label"] = json!("Claude 已用");
+        fs::write(app.join("terminal-line.json"), line.to_string()).unwrap();
+        assert_eq!(run_script(&app, &dir, raw).trim(),
+            "Claude 已用 5h \x1b[32m53%\x1b[0m·週 \x1b[33m82%\x1b[0m｜OLD");
+        line["claude"] = json!(false);
+        line["updated_at"] = json!(crate::model::now_epoch());
+        fs::write(app.join("terminal-line.json"), line.to_string()).unwrap();
+        assert_eq!(run_script(&app, &dir, raw).trim(), "Codex 5h 87%");
+        // 有分段資料時：寬度夠就一行，太窄只在段與段之間換行（中文算 2 格），agy 換行後補「agy 」
+        line["claude"] = json!(true);
+        line["used"] = json!(false);
+        line["claude_label"] = json!("Claude 剩");
+        line["pieces"] = json!([
+            {"s":"｜","t":"Codex 5h 87%","c":""},
+            {"s":"｜","t":"agy Gemini 5h 98%","c":""},
+            {"s":" / ","t":"Claude和GPT 週 0%","c":"agy "}]);
+        line["pieces_stale"] = json!([{"s":"｜","t":"OLD","c":""}]);
+        fs::write(app.join("terminal-line.json"), line.to_string()).unwrap();
+        let claude = "Claude 剩 5h [32m47%[0m·週 [33m18%[0m";
+        assert_eq!(run_script(&app, &dir, raw).trim(),
+            format!("{claude}｜Codex 5h 87%｜agy Gemini 5h 98% / Claude和GPT 週 0%"));
+        // Claude 段 23 格＋「｜Codex 5h 87%」14 格＝37；寬 58（可用 54）再接 agy 第一組 19 格＝56 放不下
+        let out = run_script_cols(&app, &dir, raw, Some(58));
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows, vec![
+            format!("{claude}｜Codex 5h 87%").as_str(),
+            "agy Gemini 5h 98% / Claude和GPT 週 0%",
+        ]);
+        // 寬 30（可用 26）：每段各自一行
+        let out = run_script_cols(&app, &dir, raw, Some(30));
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows, vec![
+            claude,
+            "Codex 5h 87%",
+            "agy Gemini 5h 98%",
+            "agy Claude和GPT 週 0%",
+        ]);
+        line["updated_at"] = json!(crate::model::now_epoch() - 901);
+        fs::write(app.join("terminal-line.json"), line.to_string()).unwrap();
+        assert_eq!(run_script(&app, &dir, raw).trim(), format!("{claude}｜OLD"));
     }
 
     #[cfg(windows)]

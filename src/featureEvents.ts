@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, type Snapshot, type ViewName } from "./util";
-import { installClaudeStatusline, setClaudeStatuslineShow, type ClaudeStatuslineState } from "./views/claudeStatus";
+import { installClaudeStatusline, setClaudeStatuslineShow, setTerminalLine, type ClaudeStatuslineState, type TermState } from "./views/claudeStatus";
 import { checkModelsNow, dismissModelChange, setModelWatch, type ModelWatchState } from "./views/modelWatch";
 
 // Claude 狀態列一鍵設定、新模型偵測：主畫面卡片與設定頁上的按鈕與開關
@@ -10,6 +10,7 @@ export type FeatureState = {
   csFailed: { id: string; error: string } | null;
   modelWatch: ModelWatchState | null;
   mwChecking: boolean;
+  term: TermState | null;
 };
 
 export function bindFeatureEvents(ext: FeatureState, deps: {
@@ -35,6 +36,11 @@ export function bindFeatureEvents(ext: FeatureState, deps: {
         ext.csInstalling = null;
         if (onPage("main", "settings")) deps.render();
       });
+  }
+
+  // 終端機要顯示哪些：存檔後 Rust 立刻重寫 terminal-line.json，下次 Claude Code 回應就生效
+  function saveTerm(cfg: TermState["cfg"]) {
+    void setTerminalLine(cfg).then((s) => { if (s) ext.term = s; if (onPage("settings")) deps.render(); });
   }
 
   $("groups").addEventListener("click", (e) => {
@@ -63,6 +69,11 @@ export function bindFeatureEvents(ext: FeatureState, deps: {
       runClaudeInstall(csBtn.dataset.csInstall);
       return;
     }
+    const usedBtn = el.closest<HTMLElement>("[data-term-used]");
+    if (usedBtn && ext.term) {
+      saveTerm({ ...ext.term.cfg, used: usedBtn.dataset.termUsed === "1" });
+      return;
+    }
     if (!el.closest("#mw-check") || ext.mwChecking) return;
     ext.mwChecking = true;
     deps.render();
@@ -77,7 +88,18 @@ export function bindFeatureEvents(ext: FeatureState, deps: {
   $("view-settings").addEventListener("change", (e) => {
     const el = e.target as HTMLInputElement;
     if (el.id === "cs-show") {
-      void setClaudeStatuslineShow(el.checked).then((cs) => { if (cs) ext.claudeStatus = cs; });
+      void setClaudeStatuslineShow(el.checked).then((cs) => { if (cs) { ext.claudeStatus = cs; if (onPage("settings")) deps.render(); } });
+    } else if (ext.term && (el.dataset.term || el.dataset.termGroup)) {
+      const cfg = { ...ext.term.cfg, agy_off: [...ext.term.cfg.agy_off] };
+      const k = el.dataset.term as "claude" | "codex" | "agy" | undefined;
+      if (k) cfg[k] = el.checked;
+      const g = el.dataset.termGroup;
+      if (g) {
+        cfg.agy_off = cfg.agy_off.filter((x) => x !== g);
+        if (!el.checked) cfg.agy_off.push(g);
+        else cfg.agy = true; // 勾了某一組，Antigravity 本身也打開
+      }
+      saveTerm(cfg);
     } else if (el.id === "mw-enabled") {
       void setModelWatch({ enabled: el.checked }).then((mw) => { if (mw) ext.modelWatch = mw; });
     } else if (el.id === "mw-auto") {

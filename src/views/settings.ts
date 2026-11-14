@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, closeBtn, esc, hhmm, t, type OfflineDto, type Settings, type UpdateState } from "../util";
-import { settingsSectionHtml as claudeStatusSectionHtml, type ClaudeStatuslineState } from "./claudeStatus";
+import { settingsSectionHtml as claudeStatusSectionHtml, type ClaudeStatuslineState, type TermState } from "./claudeStatus";
 import { settingsSectionHtml, type ModelWatchState } from "./modelWatch";
 
 export type SettingsState = {
@@ -13,6 +13,7 @@ export type SettingsState = {
   modelWatch?: ModelWatchState | null;
   mwChecking?: boolean;
   claudeStatus?: ClaudeStatuslineState | null;
+  term?: TermState | null;
   csInstalling?: string | null;
   csFailed?: { id: string; error: string } | null;
 };
@@ -72,7 +73,7 @@ export function settingsHtml(s: Settings, st: SettingsState): string {
       </div>
       ${st.detectMsg ? `<div class="msg">${esc(st.detectMsg)}</div>` : ""}
     </section>
-    ${claudeStatusSectionHtml(st.claudeStatus ?? null, accountNames, st.csInstalling ?? null, st.csFailed ?? null)}
+    ${claudeStatusSectionHtml(st.claudeStatus ?? null, accountNames, st.csInstalling ?? null, st.csFailed ?? null, st.term ?? null)}
     <section class="sec">
       <h3>${esc(t("settings.notify"))}</h3>
       <div class="srow"><span class="grow">${esc(t("settings.notify_below"))}</span><select id="thr">${thr}</select></div>

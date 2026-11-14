@@ -24,7 +24,7 @@ import {
   renderReports as renderReportsView,
   type ReportForm,
 } from "./views/report";
-import { getClaudeStatusline } from "./views/claudeStatus";
+import { getClaudeStatusline, getTerminalLine } from "./views/claudeStatus";
 import { dismissModelChange, getModelWatch, reportModelChange, type ModelWatchState } from "./views/modelWatch";
 import { bindFeatureEvents, type FeatureState } from "./featureEvents";
 import { createPanel, hasDraft } from "./panel";
@@ -49,7 +49,7 @@ let newReplyIds = new Set<string>();
 let repChecking = false;
 let mwReportPending = false;
 // Claude 狀態列、新模型偵測的狀態（事件在 featureEvents.ts）
-const ext: FeatureState = { claudeStatus: null, csInstalling: null, csFailed: null, modelWatch: null, mwChecking: false };
+const ext: FeatureState = { claudeStatus: null, csInstalling: null, csFailed: null, modelWatch: null, mwChecking: false, term: null };
 
 async function openUpdate() {
   upd = await invoke<UpdateState>("get_update_state").catch(() => upd);
@@ -129,7 +129,11 @@ async function loadHint() {
 async function openSettings() {
   settings = await invoke<Settings>("get_settings").catch(() => settings);
   detectMsg = "";
-  await Promise.all([loadHint(), getClaudeStatusline().then((cs) => { if (cs) ext.claudeStatus = cs; })]);
+  await Promise.all([
+    loadHint(),
+    getClaudeStatusline().then((cs) => { if (cs) ext.claudeStatus = cs; }),
+    getTerminalLine().then((tl) => { if (tl) ext.term = tl; }),
+  ]);
   view = "settings";
   $("view-settings").innerHTML = ""; // 重新打開時從最上面開始（不沿用上次的捲動位置）
   render();

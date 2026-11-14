@@ -194,3 +194,14 @@ select { height: 26px; border: 1px solid var(--btn-line); background: var(--btn)
 .cs-label { display: flex; flex-direction: column; min-width: 0; }
 .cs-label small { font-size: 11px; color: var(--muted); }
 .cs-err { color: var(--red); }
+
+/* 設定頁：終端機要顯示哪些 */
+.term-sec { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+.term-sec.dim { opacity: 0.5; }
+.term-h { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+.term-opt { font-size: 13px; margin: 4px 0; }
+.term-opt.sub { margin-left: 22px; }
+.term-opt label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.term-opt small { color: var(--muted); font-size: 11px; }
+.term-seg { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.term-seg button { padding: 3px 12px; font-size: 12px; }

@@ -79,6 +79,7 @@ export function settingsSectionHtml(
   accountNames: Record<string, string> = {},
   installingId: string | null = null,
   failed: { id: string; error: string } | null = null,
+  term: TermState | null = null,
 ): string {
   if (!state) return "";
   const multi = state.accounts.length > 1;
@@ -107,5 +108,46 @@ export function settingsSectionHtml(
       <h3>${esc(t("cs.title"))}</h3>
       ${rows}
       <div class="srow"><span class="grow cs-label"><span>${esc(t("cs.show_label"))}</span><small>${esc(t("cs.show_hint"))}</small></span><label class="switch"><input id="cs-show" type="checkbox" ${state.show ? "checked" : ""}><span></span></label></div>
+      ${termSectionHtml(term, state.show)}
     </section>`;
+}
+
+// ---- 終端機要顯示哪些（Rust terminal.rs 的 get_terminal_line／set_terminal_line） ----
+export type TermCfg = { claude: boolean; codex: boolean; agy: boolean; agy_off: string[]; used: boolean };
+export type TermState = {
+  cfg: TermCfg;
+  agy_groups: { id: string; label: string; models: string | null; five: boolean }[];
+};
+
+export function getTerminalLine(): Promise<TermState | null> {
+  return invoke<TermState>("get_terminal_line").catch(() => null);
+}
+
+export function setTerminalLine(cfg: TermCfg): Promise<TermState | null> {
+  return invoke<TermState>("set_terminal_line", { cfg }).catch(() => null);
+}
+
+/** 設定頁「終端機要顯示哪些」：show（在終端機顯示額度）關掉時整區變灰 */
+export function termSectionHtml(term: TermState | null, show: boolean): string {
+  if (!term) return "";
+  const c = term.cfg;
+  const off = show ? "" : "disabled";
+  const box = (attr: string, on: boolean, label: string, hint: string, sub = false) =>
+    `<div class="term-opt${sub ? " sub" : ""}"><label><input type="checkbox" ${attr} ${on ? "checked" : ""} ${off}> ${esc(label)}</label>${hint ? ` <small>${esc(hint)}</small>` : ""}</div>`;
+  const both = t("cs.term_both");
+  const groups = term.agy_groups.map((g) => {
+    const kinds = g.five ? both : t("cs.term_week_only");
+    const hint = g.models ? `${kinds} · ${g.models.replace(/, /g, "、")}` : kinds;
+    return box(`data-term-group="${esc(g.id)}"`, c.agy && !c.agy_off.includes(g.id), g.label, hint, true);
+  }).join("");
+  return `<div class="term-sec${show ? "" : " dim"}">
+      <div class="term-h">${esc(t("cs.term_title"))}</div>
+      ${box('data-term="claude"', c.claude, "Claude", both)}
+      ${box('data-term="codex"', c.codex, "Codex", both)}
+      ${box('data-term="agy"', c.agy, "Antigravity", "")}
+      ${groups}
+      <div class="srow"><span class="grow">${esc(t("cs.term_num"))}</span><span class="seg term-seg">
+        <button type="button" data-term-used="0" class="${c.used ? "" : "on"}" ${off}>${esc(t("cs.term_left"))}</button>
+        <button type="button" data-term-used="1" class="${c.used ? "on" : ""}" ${off}>${esc(t("cs.term_used"))}</button></span></div>
+    </div>`;
 }
