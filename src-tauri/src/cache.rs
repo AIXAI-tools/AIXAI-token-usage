@@ -105,6 +105,12 @@ pub fn apply_reset(windows: &[UsageWindow], now: i64) -> Vec<UsageWindow> {
         .collect()
 }
 
+/// Claude 快取／離線卡片也套用 TASK-008 規則：額外窗口（有 bucket，例如 Fable）用量 0% 不顯示。
+/// 舊版存下的資料（名稱還是 Scoped）也因此一起隱藏。
+pub fn hide_idle_extras(windows: Vec<UsageWindow>) -> Vec<UsageWindow> {
+    windows.into_iter().filter(|w| w.label.bucket.is_none() || w.used_percent > 0.0).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +123,15 @@ mod tests {
     #[test]
     fn passed_reset_becomes_full_and_marked() {
         let out = apply_reset(&[w(87.0, Some(1000)), w(40.0, Some(5000)), w(10.0, None)], 2000);
+        // 額外窗口 0% 隱藏、用到才留；一般窗口 0% 照留
+        let extra = |used: f64| {
+            let mut x = w(used, None);
+            x.label.bucket = Some("Scoped".into());
+            x
+        };
+        let kept = hide_idle_extras(vec![w(0.0, None), extra(0.0), extra(5.0)]);
+        assert_eq!(kept.len(), 2);
+        assert!(kept[0].label.bucket.is_none() && kept[1].used_percent == 5.0);
         assert_eq!(out[0].used_percent, 0.0);
         assert!(out[0].reset_done);
         assert_eq!(out[1].used_percent, 40.0);

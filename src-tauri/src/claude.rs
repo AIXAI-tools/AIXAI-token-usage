@@ -1,26 +1,14 @@
-// Claude 額度：呼叫 Claude Code `/usage` 背後的端點 api.anthropic.com/api/oauth/usage。
-// 安全：token 只在查詢當下讀進記憶體、只送往白名單網域；
-//       絕不換新 token、絕不寫入任何憑證檔；錯誤訊息與 log 不含 token。
+// Claude 額度只讀本機狀態列檔案。
 use crate::config::home_dir;
 use crate::model::{now_epoch, Reason, UsageWindow, WindowLabel};
+use crate::statusline;
 use serde_json::Value;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-/// 對外連線只允許這些網域（送出前檢查）
-pub const ALLOWED_HOSTS: &[&str] = &["api.anthropic.com"];
-const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
 pub struct ClaudeResult {
     pub email: Option<String>,
+    pub captured_at: Option<i64>,
     pub windows: Result<Vec<UsageWindow>, Reason>,
-}
-
-pub fn host_allowed(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else { return false };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    ALLOWED_HOSTS.contains(&host)
 }
 
 pub fn default_dir() -> Option<PathBuf> {
@@ -40,98 +28,55 @@ fn read_email(dir: &Path) -> Option<String> {
     v.pointer("/oauthAccount/emailAddress").and_then(Value::as_str).map(str::to_string)
 }
 
-pub fn fetch(dir: &Path) -> ClaudeResult {
-    let email = read_email(dir);
-    ClaudeResult { email, windows: fetch_windows(dir) }
-}
-
-fn fetch_windows(dir: &Path) -> Result<Vec<UsageWindow>, Reason> {
-    if std::env::var_os("AITOKEN_OFFLINE").is_some() {
-        return Err(Reason::new("offline"));
-    }
-    // token 只活在這個區塊的區域變數裡
-    let (token, expires_ms) = {
-        let text = std::fs::read_to_string(dir.join(".credentials.json")).map_err(|_| Reason::new("not_logged_in"))?;
-        let v: Value = serde_json::from_str(&text).map_err(|_| Reason::new("not_logged_in"))?;
-        let o = v.get("claudeAiOauth").ok_or_else(|| Reason::new("not_logged_in"))?;
-        let token = o.get("accessToken").and_then(Value::as_str).ok_or_else(|| Reason::new("not_logged_in"))?.to_string();
-        (token, o.get("expiresAt").and_then(Value::as_i64))
+pub fn fetch(app_dir: &Path, account_id: &str, dir: &Path) -> ClaudeResult {
+    let result = std::fs::read_to_string(statusline::status_path(app_dir, account_id));
+    let value = match result {
+        Ok(text) => serde_json::from_str::<Value>(&text).map_err(|_| Reason::new("no_data")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Reason::new(
+            if statusline::is_installed(app_dir, account_id, dir) {
+                "claude_statusline_waiting"
+            } else {
+                "claude_statusline_missing"
+            }
+        )),
+        Err(_) => Err(Reason::new("no_data")),
     };
-    if expires_ms.is_some_and(|e| e / 1000 <= now_epoch()) {
-        return Err(Reason::new("claude_expired"));
-    }
-    let body = http_get(USAGE_URL, &token)?;
-    let v: Value = serde_json::from_str(&body).map_err(|_| Reason::new("no_data"))?;
-    let w = parse_usage(&v);
-    if w.is_empty() {
-        return Err(Reason::new("no_data"));
-    }
-    Ok(w)
-}
-
-fn http_get(url: &str, token: &str) -> Result<String, Reason> {
-    if !host_allowed(url) {
-        return Err(Reason::error("blocked host"));
-    }
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).redirects(0).build();
-    let res = agent
-        .get(url)
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("anthropic-beta", "oauth-2025-04-20")
-        .set("User-Agent", concat!("aixai-token-usage/", env!("CARGO_PKG_VERSION")))
-        .call();
-    match res {
-        Ok(r) => {
-            let mut s = String::new();
-            r.into_reader().take(1_000_000).read_to_string(&mut s).map_err(|_| Reason::new("no_data"))?;
-            Ok(s)
+    match value {
+        Ok(v) => {
+            let file_email = v.get("email").and_then(Value::as_str).map(str::to_string);
+            let current = read_email(dir);
+            // /login 換了帳號、還沒在 Claude Code 回應過：狀態檔是上一個帳號的，不能算在新帳號頭上
+            if let (Some(f), Some(c)) = (&file_email, &current) {
+                if !f.eq_ignore_ascii_case(c) {
+                    return ClaudeResult { email: current, captured_at: None, windows: Err(Reason::new("claude_statusline_switched")) };
+                }
+            }
+            let email = file_email.or(current);
+            let captured_at = v.get("captured_at").and_then(Value::as_i64);
+            let mut windows = vec![];
+            for (key, minutes) in [("five_hour", 300), ("seven_day", 10080)] {
+                let Some(w) = v.get(key) else { continue };
+                let Some(used) = w.get("used_percentage").and_then(Value::as_f64) else { continue };
+                let resets = w.get("resets_at").and_then(Value::as_i64);
+                let mut window = UsageWindow::new(WindowLabel::from_minutes(minutes, None), used, resets);
+                if resets.is_some_and(|r| r <= now_epoch()) {
+                    window.used_percent = 0.0;
+                    window.reset_done = true;
+                }
+                windows.push(window);
+            }
+            let windows = if v.get("v").and_then(Value::as_i64) != Some(1) || captured_at.is_none() || windows.is_empty() {
+                Err(Reason::new("no_data"))
+            } else { Ok(windows) };
+            ClaudeResult { email, captured_at, windows }
         }
-        Err(ureq::Error::Status(401 | 403, _)) => Err(Reason::new("claude_expired")),
-        Err(ureq::Error::Status(code, _)) => Err(Reason::error(format!("HTTP {code}"))),
-        Err(_) => Err(Reason::error("network")),
+        Err(reason) => ClaudeResult { email: read_email(dir), captured_at: None, windows: Err(reason) },
     }
 }
 
+// Antigravity 仍使用這個時間解析函式。
 pub fn parse_iso(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
-}
-
-fn pretty_kind(kind: &str) -> String {
-    let rest = kind.strip_prefix("weekly_").unwrap_or(kind).replace('_', " ");
-    let mut c = rest.chars();
-    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-}
-
-/// 解析 /usage 回應：優先用 limits 陣列（percent＝已用 %），沒有時退回 five_hour／seven_day。
-pub fn parse_usage(v: &Value) -> Vec<UsageWindow> {
-    let mut out = vec![];
-    if let Some(limits) = v.get("limits").and_then(Value::as_array) {
-        for l in limits {
-            let Some(percent) = l.get("percent").and_then(Value::as_f64) else { continue };
-            let kind = l.get("kind").and_then(Value::as_str).unwrap_or("");
-            let group = l.get("group").and_then(Value::as_str).unwrap_or("");
-            let resets = l.get("resets_at").and_then(Value::as_str).and_then(parse_iso);
-            let (minutes, bucket) = match kind {
-                "session" => (300, None),
-                "weekly_all" => (10080, None),
-                other => {
-                    let mins = if group == "session" { 300 } else { 10080 };
-                    let name = l.get("scope").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| pretty_kind(other));
-                    (mins, Some(name))
-                }
-            };
-            out.push(UsageWindow::new(WindowLabel::from_minutes(minutes, bucket), percent, resets));
-        }
-    }
-    if out.is_empty() {
-        for (key, mins) in [("five_hour", 300), ("seven_day", 10080)] {
-            let Some(w) = v.get(key).filter(|w| w.is_object()) else { continue };
-            let Some(used) = w.get("utilization").and_then(Value::as_f64) else { continue };
-            let resets = w.get("resets_at").and_then(Value::as_str).and_then(parse_iso);
-            out.push(UsageWindow::new(WindowLabel::from_minutes(mins, None), used, resets));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -140,43 +85,50 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn parses_limits() {
-        let v = json!({"five_hour":{"utilization":87.0},"limits":[
-            {"kind":"session","group":"session","percent":87,"resets_at":"2026-11-03T04:59:59.810310+00:00","scope":null},
-            {"kind":"weekly_all","group":"weekly","percent":88,"resets_at":"2026-11-04T20:59:59.810327+00:00","scope":null},
-            {"kind":"weekly_fable","group":"weekly","percent":12.5,"resets_at":null,"scope":null}]});
-        let w = parse_usage(&v);
-        assert_eq!(w.len(), 3);
-        assert_eq!(w[0].label.kind, "five_hour");
-        assert_eq!(w[0].used_percent, 87.0);
-        assert_eq!(w[0].resets_at, Some(1793681999));
-        assert_eq!(w[1].label.kind, "weekly");
-        assert!(w[1].label.bucket.is_none());
-        assert_eq!(w[2].label.bucket.as_deref(), Some("Fable"));
-        assert_eq!(w[2].resets_at, None);
-    }
-
-    #[test]
-    fn falls_back_to_five_hour_seven_day() {
-        let v = json!({"five_hour":{"utilization":10.0,"resets_at":"2026-11-03T04:59:59+00:00"},"seven_day":{"utilization":20.0,"resets_at":null},"seven_day_opus":null});
-        let w = parse_usage(&v);
+    fn status_file_windows_email_reset_and_missing_window() {
+        let root = std::env::temp_dir().join(format!("aitoken-claude-{}", now_epoch()));
+        let app = root.join("app");
+        let dir = root.join("claude");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = statusline::status_path(&app, "claude:test");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut v = json!({"v":1,"captured_at":123,"email":"file@example.invalid",
+            "five_hour":{"used_percentage":46.0,"resets_at":i64::MAX},
+            "seven_day":{"used_percentage":20.0,"resets_at":1}});
+        std::fs::write(&path, v.to_string()).unwrap();
+        let r = fetch(&app, "claude:test", &dir);
+        assert_eq!(r.email.as_deref(), Some("file@example.invalid"));
+        assert_eq!(r.captured_at, Some(123));
+        let w = r.windows.unwrap();
         assert_eq!(w.len(), 2);
-        assert_eq!(w[1].used_percent, 20.0);
-        assert!(parse_usage(&json!({})).is_empty());
+        assert_eq!(w[0].label.kind, "five_hour");
+        assert_eq!(w[0].used_percent, 46.0);
+        assert_eq!(w[1].label.kind, "weekly");
+        assert_eq!(w[1].used_percent, 0.0);
+        assert!(w[1].reset_done);
+        v.as_object_mut().unwrap().remove("five_hour");
+        v["email"] = Value::Null;
+        std::fs::write(dir.join(".claude.json"), json!({"oauthAccount":{"emailAddress":"fallback@example.invalid"}}).to_string()).unwrap();
+        std::fs::write(&path, v.to_string()).unwrap();
+        let r = fetch(&app, "claude:test", &dir);
+        assert_eq!(r.windows.unwrap().len(), 1);
+        assert_eq!(r.email.as_deref(), Some("fallback@example.invalid"));
     }
 
     #[test]
-    fn only_anthropic_host_is_allowed() {
-        assert!(host_allowed(USAGE_URL));
-        assert!(!host_allowed("https://evil.example.com/api/oauth/usage"));
-        assert!(!host_allowed("https://api.anthropic.com.evil.com/x"));
-        assert!(!host_allowed("http://api.anthropic.com/x"));
-        assert!(!host_allowed("https://api.anthropic.com@evil.com/x"));
-    }
-
-    #[test]
-    fn missing_credentials_is_not_logged_in() {
-        let r = fetch_windows(Path::new("C:\\no\\such\\dir")).unwrap_err();
-        assert!(r.key == "not_logged_in" || r.key == "offline");
+    fn missing_status_installed_waiting_otherwise_missing() {
+        let root = std::env::temp_dir().join(format!("aitoken-claude-missing-{}", now_epoch()));
+        let app = root.join("app");
+        let dir = root.join("claude");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(fetch(&app, "claude:test", &dir).windows.unwrap_err().key, "claude_statusline_missing");
+        statusline::install(&app, "claude:test", &dir).unwrap();
+        assert_eq!(fetch(&app, "claude:test", &dir).windows.unwrap_err().key, "claude_statusline_waiting");
+        let path = statusline::status_path(&app, "claude:test");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for text in ["broken", "{}", r#"{"v":1,"captured_at":1}"#] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(fetch(&app, "claude:test", &dir).windows.unwrap_err().key, "no_data");
+        }
     }
 }

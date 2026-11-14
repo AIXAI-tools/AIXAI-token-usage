@@ -16,6 +16,8 @@
   --tag-info-bg: #e5eef8; --tag-info-fg: #0b4f8a;
   --tag-mute-bg: #ecedef; --tag-mute-fg: #4a5462;
   --tag-warn-bg: #f0ede6; --tag-warn-fg: #5c4a1e;
+  --tag-idle-bg: #eee9de; --tag-idle-fg: #6a5a32;
+  --tag-off-bg: #f6e2e2; --tag-off-fg: #9c2b2e;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -37,6 +39,8 @@
     --tag-info-bg: #1c3149; --tag-info-fg: #a8cdf2;
     --tag-mute-bg: #34373b; --tag-mute-fg: #c3c8cf;
     --tag-warn-bg: #3d3424; --tag-warn-fg: #e6d0a0;
+    --tag-idle-bg: #33302a; --tag-idle-fg: #d8c9a6;
+    --tag-off-bg: #3a2a2a; --tag-off-fg: #f0b3b3;
     color-scheme: dark;
   }
 }
@@ -71,6 +75,8 @@ button { font-family: inherit; color: inherit; }
 .tag.info { background: var(--tag-info-bg); color: var(--tag-info-fg); }
 .tag.mute { background: var(--tag-mute-bg); color: var(--tag-mute-fg); }
 .tag.warn { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
+.tag.idle { background: var(--tag-idle-bg); color: var(--tag-idle-fg); }
+.tag.off { background: var(--tag-off-bg); color: var(--tag-off-fg); }
 .gtitle { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .msg { font-size: 12px; color: var(--muted); }
 /* 同一組的各列共用欄寬：標籤欄依文字長度自動決定，不留固定空白 */
@@ -166,3 +172,25 @@ select { height: 26px; border: 1px solid var(--btn-line); background: var(--btn)
 .urls { font-size: 11px; word-break: break-all; user-select: text; color: var(--muted); }
 .newtag { background: #ff5a5f; color: #fff; border-radius: 8px; padding: 0 6px; font-size: 10px; }
 .rbtn { align-self: flex-end; }
+
+/* 新模型偵測 */
+.mw-bar { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 6px; background: var(--tag-warn-bg); color: var(--tag-warn-fg); font-size: 12px; }
+.mw-bar .grow { min-width: 0; }
+.mw-act { border: 0; background: transparent; padding: 0; color: inherit; font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; white-space: nowrap; }
+.mw-act.mw-x { text-decoration: none; padding: 0 2px; opacity: 0.8; }
+.mw-act:hover { opacity: 1; }
+.mw-new { display: inline-block; font-size: 10px; background: var(--blue); color: #fff; border-radius: 4px; padding: 0 5px; margin-left: 5px; font-weight: 600; vertical-align: middle; }
+.mw-label { display: flex; flex-direction: column; min-width: 0; }
+.mw-label small { font-size: 11px; color: var(--muted); }
+
+/* Claude 狀態列 */
+.src { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+.src.warn { color: var(--tag-warn-fg); }
+.cs-acts { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.btnp { height: 26px; padding: 0 11px; border: 0; border-radius: 6px; background: var(--blue); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btnp:hover { filter: brightness(1.08); }
+.btnp:disabled { opacity: 0.55; cursor: default; }
+.cs-dim { font-size: 11.5px; color: var(--muted); }
+.cs-label { display: flex; flex-direction: column; min-width: 0; }
+.cs-label small { font-size: 11px; color: var(--muted); }
+.cs-err { color: var(--red); }

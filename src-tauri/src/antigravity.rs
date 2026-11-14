@@ -20,6 +20,55 @@ pub struct AgyResult {
     pub windows: Result<Vec<UsageWindow>, Reason>,
 }
 
+/// 唯讀模型清單，沿用專用家目錄與更新檢查時間，避免背景更新閃窗。
+pub fn list_models() -> Result<Vec<crate::models::ModelEntry>, Reason> {
+    if STOPPED.load(Ordering::SeqCst) {
+        return Err(Reason::new("agy_abnormal"));
+    }
+    if std::env::var_os("AITOKEN_OFFLINE").is_some() {
+        return Err(Reason::new("offline"));
+    }
+    let exe = find_agy().ok_or_else(|| Reason::new("agy_not_found"))?;
+    let home = private_home()?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("models").env("USERPROFILE", &home).env("HOME", &home)
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().map_err(|e| Reason::error(e.kind().to_string()))?;
+    let stdout = child.stdout.take().ok_or_else(|| Reason::error("stdout"))?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.take(2_000_001).read_to_end(&mut bytes).map(|_| bytes);
+        let _ = tx.send(result);
+    });
+    // 即使 stdout 已關閉，仍以同一個期限等待程序，避免 wait() 無限阻塞。
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let result = (|| {
+        let bytes = rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .map_err(|_| Reason::new("timeout"))?
+            .map_err(|_| Reason::new("no_data"))?;
+        if bytes.len() > 2_000_000 { return Err(Reason::new("response_too_large")); }
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(_)) | Err(_) => return Err(Reason::new("no_data")),
+                Ok(None) if std::time::Instant::now() >= deadline => return Err(Reason::new("timeout")),
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        let text = String::from_utf8(bytes).map_err(|_| Reason::new("no_data"))?;
+        crate::models::parse_agy_models(&text)
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
 pub fn fetch() -> AgyResult {
     let email = active_email();
     AgyResult { email, windows: fetch_windows() }
@@ -173,17 +222,36 @@ fn clean_group_name(name: &str) -> String {
     n.to_string()
 }
 
-/// "Models within this group: Gemini Flash, Gemini Pro" → "Flash, Pro"；格式不符回傳 None
+/// 官方描述還用舊名，換成 agy `/model` 選單上的名字（2026-11-14 實測扣額度確認歸屬，見 DECISIONS.md）
+const MODEL_NAME_MAP: &[(&str, &str)] = &[
+    ("Gemini Flash", "3.8 Flash"),
+    ("Gemini Pro", "4 Hydrogen"),
+    ("Claude Opus", "Opus 5.5"),
+    ("Claude Sonnet", "Sonnet 5.5"),
+    ("GPT-OSS", "GPT-OSS 120B"),
+];
+
+/// 官方沒附模型清單的組（Pro 方案的 Argon 單獨算）；Orchestrator 實測扣這組
+const GROUP_MODELS_FALLBACK: &[(&str, &str)] = &[("Gemini 4 Argon", "Argon, Orchestrator")];
+
+/// "Models within this group: Gemini Flash, Gemini Pro" → "3.8 Flash, 4 Hydrogen"。
+/// 只要有一個名字不在對照表（官方改了說明），整組照官方原樣（去掉組名前綴）顯示，不混用新舊名。
 fn group_models(group_name: &str, desc: &str) -> Option<String> {
-    let list = desc.strip_prefix("Models within this group:")?.trim();
+    let Some(list) = desc.strip_prefix("Models within this group:") else {
+        return GROUP_MODELS_FALLBACK.iter().find(|(g, _)| *g == group_name.trim()).map(|(_, m)| m.to_string());
+    };
+    let raw: Vec<&str> = list.trim().split(',').map(str::trim).filter(|m| !m.is_empty()).collect();
+    if raw.is_empty() {
+        return None;
+    }
+    let mapped: Option<Vec<&str>> = raw.iter().map(|m| MODEL_NAME_MAP.iter().find(|(o, _)| o == m).map(|(_, n)| *n)).collect();
+    if let Some(items) = mapped {
+        return Some(items.join(", "));
+    }
     let first = group_name.split_whitespace().next().unwrap_or("");
     let prefix = format!("{first} ");
-    let items: Vec<String> = list
-        .split(',')
-        .map(|m| m.trim().strip_prefix(prefix.as_str()).unwrap_or(m.trim()).trim().to_string())
-        .filter(|m| !m.is_empty())
-        .collect();
-    (!items.is_empty()).then(|| items.join(", "))
+    let items: Vec<&str> = raw.iter().map(|m| m.strip_prefix(prefix.as_str()).unwrap_or(m).trim()).collect();
+    Some(items.join(", "))
 }
 
 #[cfg(test)]
@@ -225,18 +293,30 @@ mod tests {
         // 第一組：5h 在前，每週在後
         assert_eq!(w[0].label.kind, "five_hour");
         assert_eq!(w[0].group.as_deref(), Some("Gemini"));
-        assert_eq!(w[0].group_models.as_deref(), Some("Flash, Pro"));
+        assert_eq!(w[0].group_models.as_deref(), Some("3.8 Flash, 4 Hydrogen"));
         assert_eq!(w[0].used_percent, 0.0);
         assert_eq!(w[1].label.kind, "weekly");
         assert!((w[1].used_percent - 46.23).abs() < 0.01);
         // 第二組：disabled 的 5h
         assert_eq!(w[2].group.as_deref(), Some("Claude and GPT"));
-        assert_eq!(w[2].group_models.as_deref(), Some("Opus, Sonnet, GPT-OSS"));
+        assert_eq!(w[2].group_models.as_deref(), Some("Opus 5.5, Sonnet 5.5, GPT-OSS 120B"));
         assert!(w[2].disabled && w[2].resets_at.is_none());
         assert_eq!(w[3].used_percent, 100.0);
-        // 第三組：描述不是模型清單，不顯示小字
+        // 第三組：描述不是模型清單，用固定清單
         assert_eq!(w[4].group.as_deref(), Some("Gemini 4 Argon"));
-        assert!(w[4].group_models.is_none());
+        assert_eq!(w[4].group_models.as_deref(), Some("Argon, Orchestrator"));
+    }
+
+    #[test]
+    fn unknown_model_name_falls_back_to_official() {
+        // 官方改了說明（出現對照表沒有的名字）→ 整組照官方原樣，不混用新舊名
+        assert_eq!(
+            group_models("Gemini Models", "Models within this group: Gemini Flash, Gemini Carbon").as_deref(),
+            Some("Flash, Carbon")
+        );
+        // 不認得的組、描述又不是清單 → 不顯示小字
+        assert!(group_models("Some New Group", "Something else").is_none());
+        assert!(group_models("Gemini Models", "Models within this group: ").is_none());
     }
 
     #[test]

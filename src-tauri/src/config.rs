@@ -38,6 +38,10 @@ pub struct Config {
     pub notify_threshold: u8,
     #[serde(default = "yes")]
     pub notify_on_reset: bool,
+    #[serde(default = "yes")]
+    pub model_watch_enabled: bool,
+    #[serde(default)]
+    pub model_watch_auto_send: bool,
     #[serde(default)]
     pub accounts: Vec<AccountCfg>,
     /// 主畫面隱藏的離線帳號（offline_id）
@@ -59,6 +63,8 @@ impl Default for Config {
             autostart_initialized: false,
             notify_threshold: 10,
             notify_on_reset: true,
+            model_watch_enabled: true,
+            model_watch_auto_send: false,
             accounts: vec![],
             offline_hidden: vec![],
         }
@@ -179,6 +185,22 @@ pub fn next_free_dir(home: &Path, prefix: &str, cfg: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_config_defaults_model_watch() {
+        let p = tmp("old-watch").join("config.json");
+        std::fs::write(&p, r#"{"language":"en","notify_on_reset":false}"#).unwrap();
+        let c = Config::load(&p);
+        assert_eq!(c.language, "en");
+        assert!(!c.notify_on_reset);
+        assert!(c.model_watch_enabled);
+        assert!(!c.model_watch_auto_send);
+        let mut changed = c;
+        changed.model_watch_enabled = false;
+        changed.model_watch_auto_send = true;
+        changed.save(&p).unwrap();
+        assert_eq!(Config::load(&p), changed);
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);

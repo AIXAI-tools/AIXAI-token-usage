@@ -10,8 +10,19 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// 只准呼叫這些方法。協定裡另有 logout、消耗重置額度等會改變狀態的方法，一律禁止。
-const ALLOWED_METHODS: &[&str] = &["initialize", "initialized", "account/read", "account/rateLimits/read"];
+const ALLOWED_METHODS: &[&str] = &["initialize", "initialized", "account/read", "account/rateLimits/read", "model/list"];
 const TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 唯讀模型清單；所有頁面共用既有 RPC 的總逾時與程序清理。
+pub fn list_models(dir: Option<&Path>) -> Result<Vec<crate::models::ModelEntry>, Reason> {
+    let exe = find_codex().ok_or_else(|| Reason::new("codex_not_found"))?;
+    let mut rpc = Rpc::start(&exe, dir)?;
+    rpc.call(1, "initialize", json!({ "clientInfo": { "name": "aixai-token-usage", "version": env!("CARGO_PKG_VERSION") } }))?;
+    rpc.send(None, "initialized", Value::Null)?;
+    crate::models::collect_codex_pages(|page, cursor| {
+        rpc.call(page + 2, "model/list", json!({ "cursor": cursor }))
+    })
+}
 
 /// dir＝None 用預設的 ~/.codex；額外帳號傳入 CODEX_HOME 資料夾
 pub fn fetch(dir: Option<&Path>) -> Provider {
