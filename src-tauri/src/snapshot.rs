@@ -74,7 +74,8 @@ fn fetch_platform_in(app_dir: &Path, a: &AccountCfg) -> Fetched {
         "claude" => {
             let dir = cfg_dir(a).unwrap_or_default();
             let r = claude::fetch(app_dir, &a.id, &dir);
-            Fetched { email: r.email, as_of: r.captured_at, outcome: r.windows.map(|w| (w, "statusline")) }
+            let src = if r.live { "live" } else { "statusline" };
+            Fetched { email: r.email, as_of: r.captured_at, outcome: r.windows.map(|w| (w, src)) }
         }
         _ => {
             let r = antigravity::fetch();

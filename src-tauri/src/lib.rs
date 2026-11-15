@@ -3,6 +3,7 @@ mod antigravity;
 mod applog;
 mod cache;
 mod claude;
+mod claude_cli;
 mod codex;
 mod commands;
 mod config;

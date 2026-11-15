@@ -1,4 +1,4 @@
-// Claude 額度只讀本機狀態列檔案。
+// Claude 額度：先跑官方 `claude -p "/usage"`（claude_cli.rs，每次更新都讀、0 token）；失敗才讀本機狀態列檔案。
 use crate::config::home_dir;
 use crate::model::{now_epoch, Reason, UsageWindow, WindowLabel};
 use crate::statusline;
@@ -9,6 +9,8 @@ pub struct ClaudeResult {
     pub email: Option<String>,
     pub captured_at: Option<i64>,
     pub windows: Result<Vec<UsageWindow>, Reason>,
+    /// true＝這次由 `/usage` 即時讀到；false＝狀態列檔案
+    pub live: bool,
 }
 
 pub fn default_dir() -> Option<PathBuf> {
@@ -29,6 +31,20 @@ fn read_email(dir: &Path) -> Option<String> {
 }
 
 pub fn fetch(app_dir: &Path, account_id: &str, dir: &Path) -> ClaudeResult {
+    let now = now_epoch();
+    // 預設資料夾不設 CLAUDE_CONFIG_DIR；額外帳號資料夾才指定
+    let config_dir = (default_dir().as_deref() != Some(dir) && !dir.as_os_str().is_empty()).then_some(dir);
+    match crate::claude_cli::fetch(config_dir, now) {
+        Ok(windows) => return ClaudeResult { email: read_email(dir), captured_at: Some(now), windows: Ok(windows), live: true },
+        Err(e) if !matches!(e.key.as_str(), "offline" | "claude_cli_not_found") => {
+            crate::applog::log(&format!("claude /usage failed ({}); fall back to status line", e.key));
+        }
+        Err(_) => {}
+    }
+    from_status_file(app_dir, account_id, dir)
+}
+
+fn from_status_file(app_dir: &Path, account_id: &str, dir: &Path) -> ClaudeResult {
     let result = std::fs::read_to_string(statusline::status_path(app_dir, account_id));
     let value = match result {
         Ok(text) => serde_json::from_str::<Value>(&text).map_err(|_| Reason::new("no_data")),
@@ -48,7 +64,7 @@ pub fn fetch(app_dir: &Path, account_id: &str, dir: &Path) -> ClaudeResult {
             // /login 換了帳號、還沒在 Claude Code 回應過：狀態檔是上一個帳號的，不能算在新帳號頭上
             if let (Some(f), Some(c)) = (&file_email, &current) {
                 if !f.eq_ignore_ascii_case(c) {
-                    return ClaudeResult { email: current, captured_at: None, windows: Err(Reason::new("claude_statusline_switched")) };
+                    return ClaudeResult { email: current, captured_at: None, windows: Err(Reason::new("claude_statusline_switched")), live: false };
                 }
             }
             let email = file_email.or(current);
@@ -68,9 +84,9 @@ pub fn fetch(app_dir: &Path, account_id: &str, dir: &Path) -> ClaudeResult {
             let windows = if v.get("v").and_then(Value::as_i64) != Some(1) || captured_at.is_none() || windows.is_empty() {
                 Err(Reason::new("no_data"))
             } else { Ok(windows) };
-            ClaudeResult { email, captured_at, windows }
+            ClaudeResult { email, captured_at, windows, live: false }
         }
-        Err(reason) => ClaudeResult { email: read_email(dir), captured_at: None, windows: Err(reason) },
+        Err(reason) => ClaudeResult { email: read_email(dir), captured_at: None, windows: Err(reason), live: false },
     }
 }
 
