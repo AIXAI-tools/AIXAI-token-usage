@@ -63,6 +63,8 @@
   "settings.notify": "通知",
   "settings.notify_below": "任一額度剩餘低於",
   "settings.notify_reset": "額度重置時通知",
+  "settings.dnd_hint": "通知沒跳出來？Windows 開著<b>「請勿打擾」</b>時，通知會直接收進通知中心（<b>Win + N</b>）。想讓 AItoken 照樣跳出來：把它加進「優先通知」。",
+  "settings.dnd_open": "打開通知設定",
   "settings.note": "設定檔只存名稱與資料夾位置，不含任何密碼",
   "settings.update": "更新",
   "settings.report": "回報",

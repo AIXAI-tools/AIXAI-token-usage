@@ -78,6 +78,7 @@ export function settingsHtml(s: Settings, st: SettingsState): string {
       <h3>${esc(t("settings.notify"))}</h3>
       <div class="srow"><span class="grow">${esc(t("settings.notify_below"))}</span><select id="thr">${thr}</select></div>
       <div class="srow"><span class="grow">${esc(t("settings.notify_reset"))}</span><label class="switch"><input id="on-reset" type="checkbox" ${s.notify_on_reset ? "checked" : ""}><span></span></label></div>
+      <div class="dnd-hint">${t("settings.dnd_hint")} <a href="#" id="open-notif">${esc(t("settings.dnd_open"))}</a></div>
     </section>
     ${settingsSectionHtml(st.modelWatch ?? null, st.mwChecking)}
     <p class="note">${esc(t("settings.note"))}</p>
@@ -114,6 +115,7 @@ export function bindSettingsEvents(
     if (el.closest("#back")) return actions.closeSettings();
     if (el.closest("#to-update")) { void actions.openUpdate(); return; }
     if (el.closest("#to-report")) { void actions.openReport(); return; }
+    if (el.closest("#open-notif")) { e.preventDefault(); void invoke("open_notification_settings").catch(() => {}); return; }
     if (el.closest("#open-ps")) {
       actions.setDetectMsg("");
       invoke<boolean>("open_powershell_login", { platform: getState().addPlatform }).then((ok) => {

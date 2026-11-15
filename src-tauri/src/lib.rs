@@ -1,3 +1,4 @@
+mod alert;
 mod antigravity;
 mod applog;
 mod cache;
@@ -96,7 +97,12 @@ pub fn run() {
             planview::remove_manual_credit,
             planview::mark_credit_used,
             planview::unmark_credit_used,
-            planview::open_usage_page
+            planview::open_usage_page,
+            planview::open_notification_settings,
+            alert::get_alerts,
+            alert::alert_resize,
+            alert::alert_action,
+            alert::alert_close
         ])
         .setup(|app| {
             // 設定與快取資料夾

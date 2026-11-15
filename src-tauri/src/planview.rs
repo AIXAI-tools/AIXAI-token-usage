@@ -11,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 const HOUR: i64 = 3600;
 const DAY: i64 = 86_400;
@@ -21,11 +20,10 @@ const CODEX_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
 const MODEL_SCAN_EVERY: i64 = 30 * 60;
 const POOLS: [&str; 3] = ["claude", "codex", "antigravity"];
 
-/// plan.json：新版面板開關等（獨立一檔，不動 config.json）
+/// plan.json：額度規劃設定（獨立一檔，不動 config.json）。
+/// 舊版檔案裡的 new_panel 欄位（新版面板開關，0.2.11 轉正後移除）讀取時直接忽略。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct PlanCfg {
-    #[serde(default)]
-    pub new_panel: bool,
     #[serde(default = "yes")]
     pub model_usage: bool,
     /// 本地時區與 UTC 的秒差，由面板回報（後端沒有時區資料）
@@ -37,7 +35,7 @@ fn yes() -> bool {
 }
 impl Default for PlanCfg {
     fn default() -> Self {
-        Self { new_panel: false, model_usage: true, tz_offset: 0 }
+        Self { model_usage: true, tz_offset: 0 }
     }
 }
 
@@ -328,9 +326,12 @@ pub(crate) fn build(inp: &Inputs) -> Built {
         let plan = planner::plan(&input);
         let by_id = |id: &str| mine.iter().copied().find(|r| r.id == id);
         let multi = provider != "antigravity" && mine.len() > 1;
-        let usable: Vec<&OrderItem> = plan.order.iter().filter(|o| !o.exhausted).collect();
-        let recommended = if multi { usable.first().map(|o| o.id.clone()) } else { None };
-        let use_now: Vec<String> = if multi { usable.iter().take(2).filter_map(|o| by_id(&o.id)).map(|r| r.label.clone()).collect() } else { vec![] };
+        // 現在用的＝目前登入、拿得到即時資料的帳號（Claude 換出去的是離線），多個時取最近更新的
+        let current: Option<&Row> = if multi { mine.iter().copied().filter(|r| !r.offline).max_by_key(|r| r.as_of.unwrap_or(0)) } else { None };
+        let current_id = current.map(|r| r.id.as_str());
+        // 接著用的＝建議順序裡第一個還有額度的其他帳號；剩不到 5% 的不值得換過去，沒別的才選
+        let others: Vec<&Row> = plan.order.iter().filter(|o| !o.exhausted && Some(o.id.as_str()) != current_id).filter_map(|o| by_id(&o.id)).collect();
+        let next: Option<&Row> = if multi { others.iter().copied().find(|r| r.weekly_left >= 5.0).or(others.first().copied()) } else { None };
 
         let accs: Vec<(f64, i64)> = mine.iter().map(|r| (r.weekly_left, r.resets_at)).collect();
         let has_credit = mine.iter().any(|r| r.credits.iter().any(|c| matches!(c.kind.as_str(), "full" | "weekly")));
@@ -340,7 +341,8 @@ pub(crate) fn build(inp: &Inputs) -> Built {
         }
         pools.push(json!({
             "provider": provider, "target_today": plan.target_today, "target_without_credits": plan.target_without_credits,
-            "used_today": plan.used_today, "feasible": plan.feasible, "waste_estimate": plan.waste_estimate, "use_now": use_now,
+            "used_today": plan.used_today, "feasible": plan.feasible, "waste_estimate": plan.waste_estimate,
+            "current": current.map(|r| r.label.clone()), "next": next.map(|r| r.label.clone()),
             "status": status, "pace": input.pace.map(|p| (p * 10.0).round() / 10.0),
         }));
 
@@ -362,9 +364,9 @@ pub(crate) fn build(inp: &Inputs) -> Built {
             })));
         }
 
-        // 列的順序＝建議先用的順序
-        for o in &plan.order {
-            let Some(r) = by_id(&o.id) else { continue };
+        // 列的順序：現在用的排第一，其餘照建議先用的順序
+        let ordered: Vec<&Row> = current.into_iter().chain(plan.order.iter().filter(|o| Some(o.id.as_str()) != current_id).filter_map(|o| by_id(&o.id))).collect();
+        for r in ordered {
             let state = if r.weekly_left <= 0.0 { "exhausted" } else if r.offline { "offline" } else { "live" };
             let families: Vec<String> = r.credits.iter().filter_map(|c| c.model.clone()).collect();
             let models: Vec<Value> = inp.shares.get(&r.id).map(|s| modelusage::summary(s, &families)).unwrap_or_default().iter()
@@ -392,7 +394,7 @@ pub(crate) fn build(inp: &Inputs) -> Built {
             view_rows.push(json!({
                 "provider": provider, "group": r.group, "account_id": r.id, "label": r.label, "state": state,
                 "five_left": r.five_left.map(f64::round), "five_resets_at": r.five_resets_at, "weekly_left": r.weekly_left.round(), "weekly_resets_at": r.resets_at,
-                "credits": r.credits.len(), "recommended": recommended.as_deref() == Some(r.id.as_str()),
+                "credits": r.credits.len(), "current": current_id == Some(r.id.as_str()),
                 "detail": if has_detail { json!({ "account_masked": r.masked, "note_key": note_key, "as_of": r.as_of.unwrap_or(inp.now),
                     "weekly_used": (100.0 - r.weekly_left).round(), "models": models, "credits": credit_rows, "outlook": outlook_json(r, inp) }) } else { Value::Null },
             }));
@@ -439,8 +441,26 @@ fn fmt_left(secs: i64) -> String {
     crate::model::format_remaining(secs)
 }
 
-/// 兩種通知：① 每週用完 ② 券快到期（24 小時、6 小時）。回傳（標題, 內文）；notified 記住發過的
-pub(crate) fn notices(rows: &[Row], plans: &[PlanOutput], paces: &HashMap<String, f64>, now: i64, zh: bool, notified: &mut HashSet<String>) -> Vec<(String, String)> {
+/// 一則通知。stay＝停留型（按了按鈕或 × 才消失）；buttons＝（文字, 動作），動作見 toast.rs
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Notice {
+    /// 識別：`out:<帳號 id>`（本週用完）／`exp:<平台>:<到期秒>`（券快到期）；提醒視窗用它更新或收掉卡片
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    pub stay: bool,
+    pub buttons: Vec<(String, String)>,
+}
+
+fn open_buttons(provider: &str, zh: bool) -> Vec<(String, String)> {
+    vec![
+        ((if zh { "打開用量頁" } else { "Open usage page" }).to_string(), format!("open:{provider}")),
+        ((if zh { "知道了" } else { "Got it" }).to_string(), "dismiss".to_string()),
+    ]
+}
+
+/// 兩種通知：① 每週用完 ② 券快到期（24 小時、6 小時）。notified 記住發過的
+pub(crate) fn notices(rows: &[Row], plans: &[PlanOutput], paces: &HashMap<String, f64>, now: i64, zh: bool, notified: &mut HashSet<String>) -> Vec<Notice> {
     let mut out = Vec::new();
     let pname = |p: &str| crate::state::platform_name(p);
     // ① 每週用完：照整池平均速度推算，其他帳號撐不撐得到這個帳號重置
@@ -450,26 +470,31 @@ pub(crate) fn notices(rows: &[Row], plans: &[PlanOutput], paces: &HashMap<String
         }
         let left = r.resets_at - now;
         let has_credit = r.credits.iter().any(|c| matches!(c.kind.as_str(), "full" | "weekly") && c.expires_at.map_or(true, |t| t > now));
-        let next = plans.iter().find(|p| p.provider == r.provider).and_then(|p| p.order.iter().find(|o| !o.exhausted && o.id != r.id));
+        // 跟面板的「接著」同一規則：剩不到 5% 的跳過，沒別的才選
+        let cands: Vec<&OrderItem> = plans.iter().find(|p| p.provider == r.provider).map(|p| p.order.iter().filter(|o| !o.exhausted && o.id != r.id).collect()).unwrap_or_default();
+        let next = cands.iter().copied().find(|o| o.weekly_left >= 5.0).or(cands.first().copied());
         let others: Vec<(f64, i64)> = rows.iter().filter(|o| o.provider == r.provider && o.id != r.id).map(|o| (o.weekly_left, o.resets_at)).collect();
         let covered = paces.get(&r.provider).map(|p| pace::run_out(&others, *p, now, r.resets_at).is_none());
         let switch = next.map(|o| if zh { format!("改用 {}。", o.label) } else { format!(" Switch to {}.", o.label) }).unwrap_or_default();
         let title = if zh { format!("{} {} 本週用完了", pname(&r.provider), r.label) } else { format!("{} {}: weekly limit used up", pname(&r.provider), r.label) };
         let press = has_credit && left >= 2 * DAY;
+        // 要按券的才停留並附按鈕；只是告知的照舊會自己收起
+        let stay = press && covered != Some(true);
         let body = match (covered, zh) {
             (Some(true), true) => format!("其他帳號撐得到重置，不用按券。{switch}"),
             (Some(true), false) => format!("Other accounts will last until the reset; no need to use a reset.{switch}"),
-            (Some(false), true) if press => format!("其他帳號撐不到重置。現在按 {} 的完整重設最划算：打開面板點「用量頁」。", r.label),
-            (Some(false), false) if press => format!("Other accounts won't last until the reset. Use {}'s reset now: open the panel and click Usage page.", r.label),
+            (Some(false), true) if press => format!("其他帳號撐不到重置。現在按 {} 的完整重設最划算。", r.label),
+            (Some(false), false) if press => format!("Other accounts won't last until the reset. Use {}'s reset now.", r.label),
             (Some(false), true) => format!("其他帳號撐不到重置，{} 後才重置。{switch}", fmt_left(left)),
             (Some(false), false) => format!("Other accounts won't last; resets in {}.{switch}", fmt_left(left)),
             // 還算不出速度：照重置時間判斷
-            (None, true) if press => format!("離重置還有 {}。現在按完整重設可換回整整一週：打開面板點「用量頁」。", fmt_left(left)),
-            (None, false) if press => format!("Resets in {}. Using a reset now gives back a full week: open the panel and click Usage page.", fmt_left(left)),
+            (None, true) if press => format!("離重置還有 {}。現在按完整重設可換回整整一週。", fmt_left(left)),
+            (None, false) if press => format!("Resets in {}. Using a reset now gives back a full week.", fmt_left(left)),
             (None, true) => format!("{} 後重置，不用按券。{switch}", fmt_left(left)),
             (None, false) => format!("Resets in {}; no need to use a reset.{switch}", fmt_left(left)),
         };
-        out.push((title, body));
+        let buttons = if stay { open_buttons(&r.provider, zh) } else { vec![] };
+        out.push(Notice { key: format!("out:{}", r.id), title, body, stay, buttons });
     }
     // ② 券快到期：同平台、同到期時間合成一則
     let mut groups: Vec<(String, i64)> = Vec::new();
@@ -488,34 +513,55 @@ pub(crate) fn notices(rows: &[Row], plans: &[PlanOutput], paces: &HashMap<String
         if stage == "6" {
             notified.insert(format!("exp:{provider}:{t}:24"));
         }
-        if !fresh_key {
-            continue;
+        if fresh_key {
+            out.extend(expiring_notice(rows, &provider, t, now, zh));
         }
-        let mut labels: Vec<String> = Vec::new();
-        let mut model: Option<String> = None;
-        for r in rows.iter().filter(|r| r.provider == provider) {
-            for c in r.credits.iter().filter(|c| c.expires_at == Some(t)) {
-                if c.kind == "model" {
-                    model = c.model.clone();
-                }
-                if !labels.contains(&r.label) {
-                    labels.push(r.label.clone());
+    }
+    out
+}
+
+/// 「券快到期」那一則。Claude 每個還沒按的帳號一顆「○○ 按了」（最多 4 顆）；都按過了回 None
+pub(crate) fn expiring_notice(rows: &[Row], provider: &str, t: i64, now: i64, zh: bool) -> Option<Notice> {
+    let mut labels: Vec<String> = Vec::new();
+    let mut used_btns: Vec<(String, String)> = Vec::new();
+    let mut model: Option<String> = None;
+    for r in rows.iter().filter(|r| r.provider == provider) {
+        for c in r.credits.iter().filter(|c| c.expires_at == Some(t)) {
+            if c.kind == "model" {
+                model = c.model.clone();
+            }
+            if !labels.contains(&r.label) {
+                labels.push(r.label.clone());
+                // 手動券展開後的 id 是「登錄 id:帳號」，按鈕要用回登錄 id
+                if c.source == "manual" && !c.account.is_empty() && used_btns.len() < 4 {
+                    let id = c.id.split_once(':').map_or(c.id.as_str(), |(id, _)| id);
+                    let text = if zh { format!("{} 按了", r.label) } else { format!("Used on {}", r.label) };
+                    used_btns.push((text, format!("used:{id}:{}", c.account)));
                 }
             }
         }
-        let what = model.map(|m| format!("{}{} 重設", m[..1].to_uppercase(), &m[1..])).unwrap_or_else(|| if zh { "重置券".into() } else { "reset".into() });
-        let title = if zh { format!("{} {} {} 後到期", pname(&provider), what, fmt_left(t - now)) } else { format!("{} {} expires in {}", pname(&provider), what, fmt_left(t - now)) };
-        // Claude 的券要手動登記「我按了」；Codex 會自動讀到
-        let manual = provider == "claude";
-        let body = match (zh, manual) {
-            (true, true) => format!("現在按最划算：{}。按完在面板點「我按了」。", labels.join("、")),
-            (true, false) => format!("現在按最划算：{}。打開面板點「用量頁」。", labels.join("、")),
-            (false, true) => format!("Best to use it now: {}. Then click \"I used it\" in the panel.", labels.join(", ")),
-            (false, false) => format!("Best to use it now: {}. Open the panel and click Usage page.", labels.join(", ")),
-        };
-        out.push((title, body));
     }
-    out
+    if labels.is_empty() {
+        return None;
+    }
+    let pname = crate::state::platform_name(provider);
+    let what = model.map(|m| format!("{}{} 重設", m[..1].to_uppercase(), &m[1..])).unwrap_or_else(|| if zh { "重置券".into() } else { "reset".into() });
+    let title = if zh { format!("{pname} {what} {} 後到期", fmt_left(t - now)) } else { format!("{pname} {what} expires in {}", fmt_left(t - now)) };
+    // Claude 的券要手動登記；Codex 會自動讀到
+    let manual = provider == "claude";
+    let body = match (zh, manual) {
+        (true, true) => format!("現在按最划算：{}。按完點下面的帳號登記。", labels.join("、")),
+        (true, false) => format!("現在按最划算：{}。", labels.join("、")),
+        (false, true) => format!("Best to use it now: {}. Then click the account below.", labels.join(", ")),
+        (false, false) => format!("Best to use it now: {}.", labels.join(", ")),
+    };
+    let buttons = if manual {
+        used_btns.push(((if zh { "打開用量頁" } else { "Open usage page" }).to_string(), format!("open:{provider}")));
+        used_btns
+    } else {
+        open_buttons(provider, zh)
+    };
+    Some(Notice { key: format!("exp:{provider}:{t}"), title, body, stay: true, buttons })
 }
 
 // ───────── 接合：讀寫檔、Tauri 指令 ─────────
@@ -597,13 +643,13 @@ pub(crate) fn on_refresh(app: &AppHandle, providers: &[Provider]) {
     let shares = model_shares(app, &cfg, &current, &hist, now);
     let built = build(&Inputs { providers, emails: &emails, codex_credits: &codex_credits, manual: &manual, history: &hist, shares: &shares, now, tz_offset: cfg.tz_offset });
     let zh = zh_of(&app.state::<AppState>().config.lock().unwrap());
+    crate::alert::on_rows(app, &built.rows, now, zh);
     let notes = with_shared(|s| {
         s.view = Some(built.view.clone());
         notices(&built.rows, &built.plans, &built.paces, now, zh, &mut s.notified)
     });
-    for (title, body) in notes {
-        applog::log("plan notification sent");
-        let _ = app.notification().builder().title(title).body(body).show();
+    for n in notes {
+        crate::alert::show(app, n);
     }
     let _ = app.emit_to(PANEL, "plan", built.view);
 }
@@ -636,12 +682,9 @@ pub(crate) fn get_plan_cfg(app: AppHandle) -> PlanCfg {
 }
 
 #[tauri::command]
-pub(crate) fn set_plan_cfg(app: AppHandle, new_panel: Option<bool>, model_usage: Option<bool>) -> PlanCfg {
+pub(crate) fn set_plan_cfg(app: AppHandle, model_usage: Option<bool>) -> PlanCfg {
     let dir = app_dir(&app);
     let mut cfg = load_cfg(&dir);
-    if let Some(v) = new_panel {
-        cfg.new_panel = v;
-    }
     if let Some(v) = model_usage {
         cfg.model_usage = v;
     }
@@ -679,6 +722,34 @@ pub(crate) fn mark_credit_used(app: AppHandle, id: String, account: String) -> R
 #[tauri::command]
 pub(crate) fn unmark_credit_used(app: AppHandle, id: String, account: String) -> Result<Value, String> {
     edit_credits(&app, |list| credits::unmark_used(list, &id, &account).then_some(()).ok_or_else(|| "not_found".to_string()))
+}
+
+/// 提醒視窗的「○○ 按了」：跟面板「我按了」同一條路（重算後提醒視窗會換成只剩沒按的帳號）
+pub(crate) fn mark_used_from_alert(app: &AppHandle, id: &str, account: &str) {
+    if let Err(e) = mark_credit_used(app.clone(), id.to_string(), account.to_string()) {
+        applog::log(&format!("alert mark used failed: {e}"));
+    }
+}
+
+/// 提醒視窗「打開用量頁」
+pub(crate) fn open_usage_for(provider: &str) -> bool {
+    match usage_url(provider) {
+        Some(url) => open_usage_page(url.to_string()),
+        None => false,
+    }
+}
+
+/// 設定頁「打開通知設定」：只開 Windows 通知設定頁這一個寫死的位址
+#[tauri::command]
+pub(crate) fn open_notification_settings() -> bool {
+    let mut cmd = std::process::Command::new("explorer.exe");
+    cmd.arg("ms-settings:notifications");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd.spawn().is_ok()
 }
 
 /// 用預設瀏覽器開官方用量頁。只開寫死的兩個網址，不接受其他值
@@ -749,16 +820,23 @@ mod tests {
         assert_eq!(b.rows.len(), 5);
         let v = &b.view;
         assert_eq!(v["pools"].as_array().unwrap().len(), 3);
-        // Claude：用完的 a 排後面、建議用離線的 b
+        // Claude：現在登入的 a（已用完）排第一並標記，接著換離線的 b
         let claude: Vec<&Value> = v["rows"].as_array().unwrap().iter().filter(|r| r["provider"] == "claude").collect();
-        assert_eq!(claude[0]["account_id"], "claude:b@example.com");
-        assert_eq!(claude[0]["state"], "offline");
-        assert_eq!(claude[0]["recommended"], true);
-        assert_eq!(claude[0]["credits"], 2);
-        assert_eq!(claude[1]["state"], "exhausted");
+        assert_eq!(claude[0]["account_id"], "claude:a@example.com");
+        assert_eq!(claude[0]["state"], "exhausted");
+        assert_eq!(claude[0]["current"], true);
+        assert_eq!(claude[1]["account_id"], "claude:b@example.com");
+        assert_eq!(claude[1]["state"], "offline");
+        assert_eq!(claude[1]["current"], false);
+        assert_eq!(claude[1]["credits"], 2);
+        let pool = v["pools"].as_array().unwrap().iter().find(|p| p["provider"] == "claude").unwrap();
+        assert_eq!(pool["current"], "a");
+        assert_eq!(pool["next"], "b");
+        // 單帳號的平台不標現在用
+        assert!(v["pools"].as_array().unwrap().iter().find(|p| p["provider"] == "codex").unwrap()["current"].is_null());
         // 模型用量：代表（opus）＋有券的（fable）；Fable 券估算退回 9%
-        assert_eq!(claude[0]["detail"]["models"].as_array().unwrap().len(), 2);
-        let fable = claude[0]["detail"]["credits"].as_array().unwrap().iter().find(|c| c["kind"] == "model").unwrap();
+        assert_eq!(claude[1]["detail"]["models"].as_array().unwrap().len(), 2);
+        let fable = claude[1]["detail"]["credits"].as_array().unwrap().iter().find(|c| c["kind"] == "model").unwrap();
         assert_eq!(fable["refund"], 9.0);
         assert_eq!(fable["hint"], "expiring");
         // Antigravity 兩組各一列、不能展開
@@ -774,6 +852,58 @@ mod tests {
     }
 
     #[test]
+    fn alert_cards_follow_credit_use() {
+        let (providers, emails, codex, manual) = fixture();
+        let empty = HashMap::new();
+        let b = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &manual, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        let n = notices(&b.rows, &b.plans, &HashMap::new(), NOW, true, &mut HashSet::new());
+        let mut cards: Vec<Notice> = n.into_iter().filter(|x| x.stay).collect();
+        assert_eq!(cards.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), ["out:claude:a@example.com", format!("exp:claude:{}", NOW + 5 * HOUR).as_str()]);
+        // a 按了 Fable 券 → 券卡片只剩 b 的按鈕；用完的 a 還是用完 → 本週用完那張留著
+        let mut used = manual.clone();
+        credits::mark_used(&mut used, "m-model", "a@example.com", NOW);
+        let b2 = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &used, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        crate::alert::revalidate(&mut cards, &b2.rows, NOW, true);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].buttons[0].1, "used:m-model:b@example.com");
+        // b 也按了 → 券卡片收掉
+        credits::mark_used(&mut used, "m-model", "b@example.com", NOW);
+        let b3 = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &used, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        crate::alert::revalidate(&mut cards, &b3.rows, NOW, true);
+        assert_eq!(cards.len(), 1);
+        // a 恢復額度（用了完整重設）→ 本週用完那張也收掉
+        let mut rows = b3.rows.clone();
+        rows.iter_mut().filter(|r| r.id == "claude:a@example.com").for_each(|r| r.weekly_left = 100.0);
+        crate::alert::revalidate(&mut cards, &rows, NOW, true);
+        assert!(cards.is_empty());
+        // 到期了也收掉
+        let mut late = vec![expiring_notice(&b.rows, "claude", NOW + 5 * HOUR, NOW, true).unwrap()];
+        crate::alert::revalidate(&mut late, &b.rows, NOW + 6 * HOUR, true);
+        assert!(late.is_empty());
+    }
+
+    #[test]
+    fn current_account_first_and_next_skips_nearly_empty() {
+        // 截圖情境：登入 aixa（剩 38%）；離線 ist7 剩 1% 最快重置、離線 ruby 剩 87%
+        let providers = vec![
+            prov("claude", "claude:default", "aixa@example.com", "statusline", vec![win(300, 60.0, NOW + HOUR, None), win(10080, 62.0, NOW + 4 * DAY, None)]),
+            prov("claude", "offline:i", "", "offline", vec![win(300, 0.0, NOW + HOUR, None), win(10080, 99.0, NOW + 2 * DAY, None)]),
+            prov("claude", "offline:r", "", "offline", vec![win(300, 0.0, NOW + HOUR, None), win(10080, 13.0, NOW + 6 * DAY, None)]),
+        ];
+        let emails = HashMap::from([("offline:i".to_string(), "ist7@example.com".to_string()), ("offline:r".to_string(), "ruby@example.com".to_string())]);
+        let empty = HashMap::new();
+        let b = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &[], manual: &[], history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        let rows: Vec<&Value> = b.view["rows"].as_array().unwrap().iter().collect();
+        assert_eq!(rows[0]["account_id"], "claude:aixa@example.com");
+        assert_eq!(rows[0]["current"], true);
+        assert!(rows[1..].iter().all(|r| r["current"] == false));
+        let pool = &b.view["pools"][0];
+        let label = |id: &str| rows.iter().find(|r| r["account_id"] == id).unwrap()["label"].clone();
+        assert_eq!(pool["current"], label("claude:aixa@example.com"));
+        assert_eq!(pool["next"], label("claude:ruby@example.com"), "剩 1% 的 ist7 不建議換過去");
+    }
+
+    #[test]
     fn samples_only_from_fresh_rows() {
         let (providers, emails, codex, manual) = fixture();
         let empty = HashMap::new();
@@ -785,6 +915,13 @@ mod tests {
     }
 
     #[test]
+    fn old_plan_json_with_new_panel_still_loads() {
+        // 0.2.10 以前的 plan.json 有 new_panel；轉正後要照樣讀到其他設定
+        let c: PlanCfg = serde_json::from_str(r#"{"new_panel":true,"model_usage":false,"tz_offset":28800}"#).unwrap();
+        assert_eq!(c, PlanCfg { model_usage: false, tz_offset: 28800 });
+    }
+
+    #[test]
     fn notifies_weekly_out_and_expiring_once() {
         let (providers, emails, codex, manual) = fixture();
         let empty = HashMap::new();
@@ -793,20 +930,67 @@ mod tests {
         let none = HashMap::new();
         let n = notices(&b.rows, &b.plans, &none, NOW, true, &mut seen);
         assert_eq!(n.len(), 2, "{n:?}");
-        // 還算不出速度：照重置時間（3 天）建議按券
-        assert!(n[0].0.contains("本週用完了") && n[0].1.contains("完整重設"), "{n:?}");
-        assert!(n[1].0.contains("Fable 重設") && n[1].1.contains("現在按最划算") && n[1].1.contains("我按了"), "{n:?}");
+        // 還算不出速度：照重置時間（3 天）建議按券 → 停留型，〔打開用量頁〕〔知道了〕
+        assert!(n[0].title.contains("本週用完了") && n[0].body.contains("完整重設"), "{n:?}");
+        assert!(n[0].stay);
+        assert_eq!(n[0].buttons, vec![("打開用量頁".to_string(), "open:claude".to_string()), ("知道了".to_string(), "dismiss".to_string())]);
+        // Claude 券快到期 → 停留型，每個還沒按的帳號一顆「按了」＋打開用量頁
+        assert!(n[1].title.contains("Fable 重設") && n[1].body.contains("現在按最划算") && n[1].body.contains("點下面的帳號"), "{n:?}");
+        assert!(n[1].stay);
+        let acts: Vec<&str> = n[1].buttons.iter().map(|b| b.1.as_str()).collect();
+        assert_eq!(acts, ["used:m-model:a@example.com", "used:m-model:b@example.com", "open:claude"]);
+        assert!(n[1].buttons[0].0.ends_with(" 按了"));
         // 同一輪不重複；6 小時那則發過後 24 小時那則也不再發
         assert!(notices(&b.rows, &b.plans, &none, NOW, true, &mut seen).is_empty());
         assert!(seen.iter().any(|k| k.ends_with(":24")));
-        // 有速度：b 剩 73%、每天 10% → 撐得到 a 重置，不用按
+        // 有速度：b 剩 73%、每天 10% → 撐得到 a 重置，不用按 → 一般通知、沒按鈕
         let slow = HashMap::from([("claude".to_string(), 10.0)]);
         let n = notices(&b.rows, &b.plans, &slow, NOW, true, &mut HashSet::new());
-        assert!(n[0].1.contains("撐得到重置") && n[0].1.contains("改用 b"), "{n:?}");
-        // 每天 60% → 撐不到，按 a 的完整重設
+        assert!(n[0].body.contains("撐得到重置") && n[0].body.contains("改用 b"), "{n:?}");
+        assert!(!n[0].stay && n[0].buttons.is_empty());
+        // 每天 60% → 撐不到，按 a 的完整重設 → 停留型
         let fast = HashMap::from([("claude".to_string(), 60.0)]);
         let n = notices(&b.rows, &b.plans, &fast, NOW, true, &mut HashSet::new());
-        assert!(n[0].1.contains("撐不到重置") && n[0].1.contains("按 a 的完整重設"), "{n:?}");
+        assert!(n[0].body.contains("撐不到重置") && n[0].body.contains("按 a 的完整重設"), "{n:?}");
+        assert!(n[0].stay && n[0].buttons[0].1 == "open:claude");
+    }
+
+    #[test]
+    fn expiring_notice_buttons_by_provider() {
+        let (providers, emails, codex, manual) = fixture();
+        let empty = HashMap::new();
+        let b = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &manual, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        // Codex：〔打開用量頁〕〔知道了〕，沒有「按了」
+        let t = NOW + 16 * DAY;
+        let n = expiring_notice(&b.rows, "codex", t, NOW, true).unwrap();
+        assert!(n.stay);
+        assert_eq!(n.buttons.iter().map(|b| b.1.as_str()).collect::<Vec<_>>(), ["open:codex", "dismiss"]);
+        // a 已經按過：只剩 b 的按鈕
+        let mut used = manual.clone();
+        credits::mark_used(&mut used, "m-model", "a@example.com", NOW);
+        let b2 = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &used, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        let n = expiring_notice(&b2.rows, "claude", NOW + 5 * HOUR, NOW, true).unwrap();
+        assert_eq!(n.buttons.iter().map(|b| b.1.as_str()).collect::<Vec<_>>(), ["used:m-model:b@example.com", "open:claude"]);
+        // 都按過了：不再跳
+        credits::mark_used(&mut used, "m-model", "b@example.com", NOW);
+        let b3 = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &used, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        assert!(expiring_notice(&b3.rows, "claude", NOW + 5 * HOUR, NOW, true).is_none());
+        // 6 個帳號：「按了」最多 4 顆
+        let base = b.rows.iter().find(|r| r.id == "claude:b@example.com").unwrap().clone();
+        let many: Vec<Row> = (0..6).map(|i| {
+            let mut r = base.clone();
+            r.label = format!("u{i}");
+            r.id = format!("claude:u{i}@example.com");
+            for c in r.credits.iter_mut() {
+                c.account = format!("u{i}@example.com");
+                c.id = format!("m-model:u{i}@example.com");
+            }
+            r
+        }).collect();
+        let n = expiring_notice(&many, "claude", NOW + 5 * HOUR, NOW, true).unwrap();
+        assert_eq!(n.buttons.len(), 5);
+        assert_eq!(n.buttons.iter().filter(|b| b.1.starts_with("used:")).count(), 4);
+        assert_eq!(n.buttons.last().unwrap().1, "open:claude");
     }
 
     #[test]

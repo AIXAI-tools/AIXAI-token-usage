@@ -4,5 +4,11 @@ import { defineConfig } from "vite";
 export default defineConfig({
   clearScreen: false,
   server: { port: 1420, strictPort: true },
-  build: { target: "es2022", outDir: "dist", emptyOutDir: true },
+  build: {
+    target: "es2022",
+    outDir: "dist",
+    emptyOutDir: true,
+    // 面板＋提醒視窗（alert.html，TASK-024）兩個頁面
+    rollupOptions: { input: { main: "index.html", alert: "alert.html" } },
+  },
 });

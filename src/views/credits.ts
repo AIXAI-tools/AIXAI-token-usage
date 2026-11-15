@@ -35,7 +35,6 @@ export type ClaudeAccount = {
 };
 
 export type CreditToggles = {
-  daily_goal: boolean;
   model_usage: boolean;
   codex_auto: boolean;
 };
@@ -136,7 +135,6 @@ export function creditsHtml(
   form: CreditFormState = {},
 ): string {
   const toggles: CreditToggles = {
-    daily_goal: form.toggles?.daily_goal ?? true,
     model_usage: form.toggles?.model_usage ?? true,
     codex_auto: form.toggles?.codex_auto ?? true,
   };
@@ -149,7 +147,7 @@ export function creditsHtml(
   const selectedSet = new Set((form.accounts ?? []).map((e) => e.trim().toLowerCase()));
   const refillFive = form.refill_five_hour ?? true;
 
-  const togglesHtml = `<div class="cr-toggles">${toggleRowHtml("toggle-daily-goal", "credits.toggle.daily_goal", "credits.toggle.daily_goal_desc", toggles.daily_goal)}${toggleRowHtml("toggle-model-usage", "credits.toggle.model_usage", "credits.toggle.model_usage_desc", toggles.model_usage)}${toggleRowHtml("toggle-codex-auto", "credits.toggle.codex_auto", "credits.toggle.codex_auto_desc", toggles.codex_auto)}</div>`;
+  const togglesHtml = `<div class="cr-toggles">${toggleRowHtml("toggle-model-usage", "credits.toggle.model_usage", "credits.toggle.model_usage_desc", toggles.model_usage)}${toggleRowHtml("toggle-codex-auto", "credits.toggle.codex_auto", "credits.toggle.codex_auto_desc", toggles.codex_auto)}</div>`;
 
   const kindBtns = KINDS.map((k) => {
     const active = k === kind;

@@ -1,7 +1,5 @@
 {
   "credits.title": "重置券與目標",
-  "credits.toggle.daily_goal": "新版面板（測試）",
-  "credits.toggle.daily_goal_desc": "主畫面改成：今天目標、該做的事、一個帳號一行",
   "credits.toggle.model_usage": "模型用量統計",
   "credits.toggle.model_usage_desc": "讀本機 Claude Code 紀錄的模型名稱與 token 數，不讀對話內容",
   "credits.toggle.codex_auto": "Codex 自動讀取重置券",

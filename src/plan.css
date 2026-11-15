@@ -13,7 +13,7 @@
 .plan-columns { color: var(--muted); }
 .plan-account { width: 100%; border: 0; padding: 5px 4px; border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; }
 .plan-account:not(:disabled) { cursor: pointer; }
-.plan-account.recommended { background: color-mix(in srgb, #34a853 12%, var(--bg)); }
+.plan-account.current { background: color-mix(in srgb, #34a853 12%, var(--bg)); }
 .plan-dot { width: 7px; height: 7px; border-radius: 50%; background: #34a853; }
 .plan-dot.offline { background: #89919c; }
 .plan-dot.exhausted { background: #df5b52; }

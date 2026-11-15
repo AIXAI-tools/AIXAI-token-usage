@@ -1,4 +1,5 @@
-// 額度規劃的前端接合：新版面板（開關 new_panel）、計畫分頁、設定頁的重置券登錄。
+// 額度規劃的前端接合：主畫面（新版面板）、計畫分頁、設定頁的重置券登錄。
+// 額度規劃資料還沒到之前，主畫面先顯示 views/main.ts 的基本帳號列表。
 // 用 MutationObserver 接在既有畫面後面，不改 views/main.ts、views/settings.ts。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -8,11 +9,11 @@ import { planHtml } from "./views/plan";
 import type { PlanView } from "./views/planTypes";
 import { creditsHtml, ct, readForm, type CreditFormState, type CreditKind } from "./views/credits";
 
-type PlanCfg = { new_panel: boolean; model_usage: boolean };
+type PlanCfg = { model_usage: boolean };
 type Deps = { getView: () => string; fit: () => void };
 
 let planView: PlanView | null = null;
-let cfg: PlanCfg = { new_panel: false, model_usage: true };
+let cfg: PlanCfg = { model_usage: true };
 let tab: "now" | "plan" = "now";
 let expanded: string | null = null;
 // 收起的群組（CLAUDE、CODEX…），記在這台電腦，下次開面板一樣
@@ -43,7 +44,7 @@ const tzOffset = () => -new Date().getTimezoneOffset() * 60;
 // ---- 主畫面 ----
 function paintMain() {
   const groups = $("groups");
-  if (!cfg.new_panel || !planView || deps.getView() !== "main" || groups.querySelector(".plan-root")) return;
+  if (!planView || deps.getView() !== "main" || groups.querySelector(".plan-root")) return;
   const tabs = `<div class="plan-tabs"><button type="button" data-act="plan-tab" data-id="now" class="${tab === "now" ? "on" : ""}">${zh() ? "現在" : "Now"}</button><button type="button" data-act="plan-tab" data-id="plan" class="${tab === "plan" ? "on" : ""}">${zh() ? "計畫" : "Plan"}</button></div>`;
   groups.innerHTML = `<div class="plan-root">${tabs}${tab === "now" ? overviewHtml(planView, expanded, collapsed) : planHtml(planView)}</div>`;
   deps.fit();
@@ -61,12 +62,12 @@ function paintSettings() {
   if (!body || deps.getView() !== "settings" || body.querySelector("#plan-settings")) return;
   const html = creditsHtml(planView?.manual_credits ?? [], planView?.claude_accounts ?? [], {
     ...form,
-    toggles: { daily_goal: cfg.new_panel, model_usage: cfg.model_usage, codex_auto: true },
+    toggles: { model_usage: cfg.model_usage, codex_auto: true },
   });
   const sec = document.createElement("div");
   sec.id = "plan-settings";
   sec.className = "sec";
-  sec.innerHTML = `<h3>${zh() ? "重置券與每日目標" : "Resets and daily target"}</h3>${html}`;
+  sec.innerHTML = `<h3>${zh() ? "重置券與用量統計" : "Resets and usage stats"}</h3>${html}`;
   // Codex 的券固定自動讀取，不提供開關
   sec.querySelector('[data-act="toggle-codex-auto"]')?.closest(".srow")?.remove();
   if (usedPick) {
@@ -147,9 +148,8 @@ async function onSettingsChange(e: Event) {
   const sec = el?.closest<HTMLElement>("#plan-settings");
   if (!el || !sec) return;
   const act = el.dataset.act;
-  if (act === "toggle-daily-goal" || act === "toggle-model-usage") {
-    const args = act === "toggle-daily-goal" ? { newPanel: el.checked } : { modelUsage: el.checked };
-    cfg = await invoke<PlanCfg>("set_plan_cfg", args).catch(() => cfg);
+  if (act === "toggle-model-usage") {
+    cfg = await invoke<PlanCfg>("set_plan_cfg", { modelUsage: el.checked }).catch(() => cfg);
   } else if (act === "credit-all-accounts") {
     keepForm(sec);
     repaintSettings();

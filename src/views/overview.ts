@@ -98,11 +98,15 @@ function paceRow(view: PlanView, p: PlanView["pools"][number]): string {
     : `<span class="plan-track pace"><span class="${behind ? "is-warn" : "is-good"}" style="width:${clamp(pace / scale * 100)}%"></span><i style="left:${clamp(target / scale * 100)}%"></i></span>`;
   const value = `<span class="plan-value"><b>${pace === null ? "—" : Math.round(pace)}</b> / ${Math.round(target)}%${isEn() ? "/day" : "/天"}</span>`;
   const notes: string[] = [];
-  if (p.use_now.length) {
-    const left = (label: string) => view.rows.find((r) => r.provider === p.provider && r.label === label)?.weekly_left;
-    const first = p.use_now[0];
-    const firstLeft = left(first);
-    notes.push(`${isEn() ? "Using" : "現在用"} <b>${esc(first)}</b>${firstLeft !== undefined ? `（${isEn() ? "" : "剩 "}${pct(firstLeft)}）` : ""}${p.use_now[1] ? ` → ${isEn() ? "then" : "接著"} <b>${esc(p.use_now[1])}</b>` : ""}`);
+  // 現在登入的帳號 → 用完後接著換哪個
+  const curLeft = view.rows.find((r) => r.provider === p.provider && r.current)?.weekly_left;
+  const then = p.next ? ` → ${isEn() ? "then" : "接著"} <b>${esc(p.next)}</b>` : "";
+  if (p.current && curLeft !== undefined && curLeft <= 0) {
+    notes.push(`<b>${esc(p.current)}</b> ${isEn() ? "used up" : "用完了"}${p.next ? ` → ${isEn() ? "switch to" : "換"} <b>${esc(p.next)}</b>` : ""}`);
+  } else if (p.current) {
+    notes.push(`${isEn() ? "Using" : "現在用"} <b>${esc(p.current)}</b>${curLeft !== undefined ? `（${isEn() ? "" : "剩 "}${pct(curLeft)}）` : ""}${then}`);
+  } else if (p.next) {
+    notes.push(`${isEn() ? "Use" : "先用"} <b>${esc(p.next)}</b>`);
   }
   if (p.status && p.status.kind !== "ok") notes.push(`<span class="is-${esc(p.status.kind)}">${esc(statusText(p))}</span>`);
   return `<div class="plan-today"><span class="plan-name">${names[p.provider]}</span>${bar}${value}</div>${notes.length ? `<div class="plan-use">${notes.join(" · ")}</div>` : ""}`;
@@ -126,7 +130,7 @@ export function overviewHtml(view: PlanView, expandedId: string | null, collapse
     const fiveTime = row.five_resets_at ? `<small>${esc(formatRemaining(row.five_resets_at - view.now))}</small>` : "";
     const five = row.five_left === null ? "—" : `${pct(row.five_left)}${fiveTime}`;
     const weekly = clamp(row.weekly_left);
-    return `<button type="button" class="plan-account${row.recommended ? " recommended" : ""}${expanded ? " expanded" : ""}" ${row.detail ? `data-act="toggle-row" data-id="${esc(row.account_id)}" aria-expanded="${expanded}"` : "disabled"}><span class="plan-dot ${row.state}"></span><span class="plan-label">${esc(row.label)} ${arrow}</span><span class="plan-five${row.five_left !== null && row.five_left < 30 ? " low" : ""}">${five}</span><span class="plan-week-track"><span class="${weekly < 30 ? "is-warn" : ""}" style="width:${weekly}%"></span></span><span class="plan-week-value${weekly < 10 ? " low" : ""}">${pct(row.weekly_left)}</span><span class="plan-reset">${esc(formatRemaining(row.weekly_resets_at - view.now))}</span><span class="plan-credits">${row.credits ? `🎟${row.credits}` : ""}</span></button>${expanded ? details(row) : ""}`;
+    return `<button type="button" class="plan-account${row.current ? " current" : ""}${expanded ? " expanded" : ""}" ${row.detail ? `data-act="toggle-row" data-id="${esc(row.account_id)}" aria-expanded="${expanded}"` : "disabled"}><span class="plan-dot ${row.state}"></span><span class="plan-label">${esc(row.label)} ${arrow}</span><span class="plan-five${row.five_left !== null && row.five_left < 30 ? " low" : ""}">${five}</span><span class="plan-week-track"><span class="${weekly < 30 ? "is-warn" : ""}" style="width:${weekly}%"></span></span><span class="plan-week-value${weekly < 10 ? " low" : ""}">${pct(row.weekly_left)}</span><span class="plan-reset">${esc(formatRemaining(row.weekly_resets_at - view.now))}</span><span class="plan-credits">${row.credits ? `🎟${row.credits}` : ""}</span></button>${expanded ? details(row) : ""}`;
   }).join("")}`;
   }).join("");
   return `${today}${todoBlock}<section class="plan-sec plan-accounts"><h3 class="plan-columns"><span></span><span>${msg("accounts.title")}</span><span>${msg("accounts.five_hour")}</span><span>${msg("accounts.weekly")}</span><span></span><span>${msg("accounts.reset")}</span><span>${msg("accounts.credits")}</span></h3>${rows}</section>`;

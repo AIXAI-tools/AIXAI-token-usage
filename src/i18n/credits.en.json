@@ -1,7 +1,5 @@
 {
   "credits.title": "Reset credits & targets",
-  "credits.toggle.daily_goal": "New panel (beta)",
-  "credits.toggle.daily_goal_desc": "Main view shows today's target, to-dos and one row per account",
   "credits.toggle.model_usage": "Model usage stats",
   "credits.toggle.model_usage_desc": "Read model names and token counts from local Claude Code logs (no chat content)",
   "credits.toggle.codex_auto": "Auto-read Codex reset credits",

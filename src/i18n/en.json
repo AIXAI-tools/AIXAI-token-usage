@@ -63,6 +63,8 @@
   "settings.notify": "Notifications",
   "settings.notify_below": "Notify when any quota is below",
   "settings.notify_reset": "Notify when a quota resets",
+  "settings.dnd_hint": "Notifications not showing? With Windows <b>Do not disturb</b> on, they go straight to the notification center (<b>Win + N</b>). To let AItoken through, add it to priority notifications.",
+  "settings.dnd_open": "Open notification settings",
   "settings.note": "The settings file only stores names and folder paths, never any password",
   "settings.update": "Update",
   "settings.report": "Report",

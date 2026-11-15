@@ -1,0 +1,28 @@
+/* 提醒視窗（TASK-024）：右下角、置頂，按了按鈕或 × 才關 */
+:root {
+  --bg: #f9f9f9; --card: #ffffff; --line: #d9dde3; --text: #1a1a1a; --muted: #4a5462;
+  --btn: #eceef1; --blue: #0f6cbd; --on-blue: #ffffff; --orange: #e8890c;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #202020; --card: #262626; --line: #3c3c3c; --text: #f3f3f3; --muted: #b4bac2;
+    --btn: #3a3a3a; --blue: #4ca0e8; --on-blue: #000000; --orange: #f0a43a;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 "Segoe UI", "Microsoft JhengHei", sans-serif; user-select: none; overflow: hidden; }
+#cards { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+.card { position: relative; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--blue); border-radius: 8px; padding: 9px 12px 10px; }
+.card.warn { border-left-color: var(--orange); }
+.app { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.app img { width: 14px; height: 14px; }
+.x { position: absolute; right: 6px; top: 4px; width: 22px; height: 22px; border: 0; background: none; color: var(--muted); font-size: 13px; cursor: pointer; border-radius: 4px; }
+.x:hover { background: var(--btn); }
+.t { font-weight: 600; font-size: 14px; margin: 4px 22px 2px 0; }
+.b { color: var(--muted); font-size: 12.5px; }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.acts button { flex: 1; min-width: 70px; border: 0; border-radius: 4px; padding: 5px 6px; font: inherit; font-size: 12px; background: var(--btn); color: var(--text); cursor: pointer; }
+.acts button.pri { background: var(--blue); color: var(--on-blue); font-weight: 600; }
+.acts button:disabled { opacity: .5; cursor: default; }
