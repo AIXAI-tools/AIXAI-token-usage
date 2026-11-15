@@ -12,8 +12,7 @@
   "status.ok": "On track",
   "status.learning": "Still learning your pace",
   "status.exhausted": "{group} used up · resets in {time}",
-  "status.pace_prefix": "Pace {pace}%/day",
-  "status.just_reset": "Reset {resetTime}; pace available after {readyTime}",
+  "status.just_reset": "Just reset; estimate after {readyTime}",
   "credits.title": "Credits ({counts})",
   "credits.count_claude": "Claude {count}",
   "credits.count_codex": "Codex {count}",
@@ -73,8 +72,11 @@
   "todo.model_credit_main": "{account}'s {model} reset expires {date}",
   "todo.model_credit_refund": "Estimated {refund}% refund now; use it in the last few hours before expiry.",
   "todo.model_credit_zero": "0% {model} used this week; no refund. If using {model}, use it a few hours before expiry.",
-  "status.short_credit_on": "Runs out {time}; use the {date} reset then",
-  "budget.left": "<b>{value}%</b> left today",
-  "budget.done": "Today's budget used up",
-  "budget.over": "<span class=\"is-warn-text\">{over}% over</span>; about {after}%/day from now still lasts to reset"
+  "outlook.short": "At this pace, <span class=\"is-short\">runs out {time}</span>, before the {reset} reset",
+  "outlook.short_nodate": "At this pace, <span class=\"is-short\">runs out {time}</span>",
+  "outlook.credit_on": "<span class=\"is-short_credit\">Use the reset expiring {date} then</span>",
+  "outlook.credit": "<span class=\"is-short_credit\">Use a reset then</span>",
+  "outlook.leftover": "At this pace, about <span class=\"is-more\">{value}%</span> will be left unused at reset",
+  "outlook.ok": "At this pace, lasts exactly to the {reset} reset",
+  "outlook.ok_nodate": "At this pace, lasts exactly to the reset"
 }

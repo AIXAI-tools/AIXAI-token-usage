@@ -244,7 +244,7 @@ fn group_pools(rows: &[&Row], inp: &Inputs) -> Vec<Value> {
         let status = if exhausted {
             json!({ "kind": "exhausted", "value": (r.resets_at - inp.now).max(0) })
         } else {
-            status_json(pace::status(&[(r.weekly_left, r.resets_at)], rate, target, inp.now), inp.now, false)
+            status_json(pace::status(&[(r.weekly_left, r.resets_at)], rate, target, inp.now), inp.now, r.resets_at, false)
         };
         let used_today = history::used_between(inp.history, &r.id, start, inp.now + 1);
         // 今天額度：今天 00:00 的剩餘 ÷ 從 00:00 到重置的天數（一天內固定）
@@ -252,7 +252,7 @@ fn group_pools(rows: &[&Row], inp: &Inputs) -> Vec<Value> {
         let budget_today = if exhausted && used_today <= 0.0 { 0.0 } else { ((day_left.0 / day_left.1) * 10.0).round() / 10.0 };
         json!({
             "budget_today": budget_today, "after_today": target, "press_credit_expires": Value::Null,
-            "provider": "antigravity", "group": r.label, "cycle_start": pace::cycle_start(r.resets_at), "target_today": target, "target_without_credits": target,
+            "provider": "antigravity", "group": r.label, "reset_at": r.resets_at, "cycle_start": pace::cycle_start(r.resets_at), "target_today": target, "target_without_credits": target,
             "used_today": (used_today * 10.0).round() / 10.0, "feasible": true, "waste_estimate": Value::Null,
             "current": Value::Null, "next": Value::Null, "status": status, "pace": rate.map(|p| (p * 10.0).round() / 10.0),
         })
@@ -260,11 +260,12 @@ fn group_pools(rows: &[&Row], inp: &Inputs) -> Vec<Value> {
 }
 
 /// has_credit：池內有完整重設可用 → 不夠時改說「那時按券」
-fn status_json(s: pace::Status, now: i64, has_credit: bool) -> Value {
+/// until＝池裡最晚重置的時間；用不完時 leftover＝每天可多用 × 到 until 的天數（重置前還會剩幾 %）
+fn status_json(s: pace::Status, now: i64, until: i64, has_credit: bool) -> Value {
     match s {
         pace::Status::Learning => json!({ "kind": "learning" }),
         pace::Status::Short(t) => json!({ "kind": if has_credit { "short_credit" } else { "short" }, "value": t - now }),
-        pace::Status::More(v) => json!({ "kind": "more", "value": v.round() }),
+        pace::Status::More(v) => json!({ "kind": "more", "value": v.round(), "leftover": (v * (until - now).max(0) as f64 / DAY as f64).round() }),
         pace::Status::Ok => json!({ "kind": "ok" }),
     }
 }
@@ -357,9 +358,6 @@ pub(crate) fn build(inp: &Inputs) -> Built {
     let mut pools = Vec::new();
     let mut todos: Vec<(usize, Value)> = Vec::new();
     let mut view_rows = Vec::new();
-    // 週表與 7 天長條圖已拿掉（約定 12.1），欄位先留空陣列
-    let daily: Vec<Value> = Vec::new();
-    let lanes: Vec<Value> = Vec::new();
     let mut headroom = Vec::new();
     let mut credit_cards: Vec<Value> = Vec::new();
     let mut paces = HashMap::new();
@@ -383,7 +381,8 @@ pub(crate) fn build(inp: &Inputs) -> Built {
         let accs: Vec<(f64, i64)> = mine.iter().map(|r| (r.weekly_left, r.resets_at)).collect();
         // 「那時按券」只在值得按時說（約定 11.1）；不值得的缺口由 short_gap 提醒
         let has_credit = plan.todos.iter().any(|t| t.kind == "press_credit");
-        let status = status_json(pace::status(&accs, input.pace, plan.target_today, inp.now), inp.now, has_credit);
+        let until = accs.iter().map(|a| a.1).max().unwrap_or(inp.now);
+        let status = status_json(pace::status(&accs, input.pace, plan.target_today, inp.now), inp.now, until, has_credit);
         if let Some(p) = input.pace {
             paces.insert(provider.to_string(), p);
         }
@@ -400,7 +399,7 @@ pub(crate) fn build(inp: &Inputs) -> Built {
                 .and_then(|t| mine.iter().flat_map(|r| r.credits.iter()).find(|c| Some(&c.id) == t.credit_id.as_ref()))
                 .and_then(|c| c.expires_at);
             pools.push(json!({
-                "budget_today": budget_today, "after_today": after_today, "press_credit_expires": press_credit_expires,
+                "budget_today": budget_today, "after_today": after_today, "press_credit_expires": press_credit_expires, "reset_at": until,
                 "provider": provider, "target_today": plan.target_today, "target_without_credits": plan.target_without_credits,
                 "used_today": plan.used_today, "feasible": plan.feasible, "waste_estimate": plan.waste_estimate,
                 "current": current.map(|r| r.label.clone()), "next": next.map(|r| r.label.clone()),
@@ -515,7 +514,7 @@ pub(crate) fn build(inp: &Inputs) -> Built {
         .map(|r| json!({ "email": r.email, "label": r.label })).collect();
     let view = json!({
         "now": inp.now, "pools": pools, "todos": todos, "rows": view_rows,
-        "plan": { "daily": daily, "lanes": lanes, "headroom": headroom },
+        "plan": { "headroom": headroom },
         "manual_credits": inp.manual, "claude_accounts": claude_accounts, "credits": credit_cards,
     });
     Built { view, rows: all, plans, paces }
@@ -955,6 +954,10 @@ mod tests {
         assert_eq!(pools[0]["pace"], 4.5);
         assert_eq!(pools[0]["status"]["kind"], "more");
         assert_eq!(pools[0]["status"]["value"], 12.0);
+        // 重置前還會剩：95 − 4.5 × 5.9 ≈ 68（約定 §14）
+        let leftover = pools[0]["status"]["leftover"].as_f64().unwrap();
+        assert!((67.0..=70.0).contains(&leftover), "{leftover}");
+        assert_eq!(pools[0]["reset_at"], reset_g);
         // Argon：剛重置 → 還在累積資料、目標 100 ÷ 6.96
         assert!(pools[1]["pace"].is_null());
         assert_eq!(pools[1]["status"]["kind"], "learning");
@@ -1179,9 +1182,8 @@ mod tests {
         assert_eq!(a["five_resets_at"], NOW + 3 * HOUR);
         let codex_row = b.view["rows"].as_array().unwrap().iter().find(|r| r["provider"] == "codex").unwrap();
         assert!(codex_row["five_resets_at"].is_null());
-        // 週表與 7 天長條圖拿掉了（約定 12.1）
-        assert!(b.view["plan"]["daily"].as_array().unwrap().is_empty());
-        assert!(b.view["plan"]["lanes"].as_array().unwrap().is_empty());
+        // 週表與 7 天長條圖拿掉了（約定 12.1），欄位也清掉
+        assert!(b.view["plan"].get("daily").is_none() && b.view["plan"].get("lanes").is_none());
         // 券一張一行：Claude 的 a、b 各有完整重設＋Fable，Codex 一張；Claude 在前
         let credits = b.view["credits"].as_array().unwrap();
         assert_eq!(credits.len(), 5, "{credits:?}");

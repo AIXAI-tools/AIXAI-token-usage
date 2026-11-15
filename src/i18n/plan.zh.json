@@ -12,8 +12,7 @@
   "status.ok": "剛好",
   "status.learning": "還在累積資料",
   "status.exhausted": "{group} 用完了，{time} 後重置",
-  "status.pace_prefix": "平均 {pace}%/天",
-  "status.just_reset": "{resetTime} 剛重置，平均 {readyTime} 後才算",
+  "status.just_reset": "剛重置，{readyTime} 後才估得出來",
   "credits.title": "券（{counts}）",
   "credits.count_claude": "Claude {count} 張",
   "credits.count_codex": "Codex {count} 張",
@@ -73,8 +72,11 @@
   "todo.model_credit_main": "{account} 的 {model} 重設 {date} 到期",
   "todo.model_credit_refund": "目前估計可退回約 {refund}%，到期前幾小時再按。",
   "todo.model_credit_zero": "這週 {model} 用了 0%，按了也退不到。有用 {model} 的話，到期前幾小時再按。",
-  "status.short_credit_on": "{time} 用光，那時按 {date} 的券",
-  "budget.left": "還能用 <b>{value}%</b>",
-  "budget.done": "今天額度用完了",
-  "budget.over": "<span class=\"is-warn-text\">超用 {over}%</span>，接下來每天約 {after}% 就撐得到重置"
+  "outlook.short": "照目前速度，<span class=\"is-short\">{time} 用完</span>，早於 {reset} 重置",
+  "outlook.short_nodate": "照目前速度，<span class=\"is-short\">{time} 用完</span>",
+  "outlook.credit_on": "<span class=\"is-short_credit\">那時按 {date} 到期的券</span>",
+  "outlook.credit": "<span class=\"is-short_credit\">那時按券</span>",
+  "outlook.leftover": "照目前速度，重置前還會剩約 <span class=\"is-more\">{value}%</span> 沒用到",
+  "outlook.ok": "照目前速度，剛好用到 {reset} 重置",
+  "outlook.ok_nodate": "照目前速度，剛好用到重置"
 }

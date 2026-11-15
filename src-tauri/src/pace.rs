@@ -148,49 +148,6 @@ pub fn status(accs: &[(f64, i64)], pace: Option<f64>, target: f64, now: i64) -> 
     if more >= 2.0 { Status::More(more) } else { Status::Ok }
 }
 
-/// 推算用的帳號資料（0.2.12 拿掉 7 天長條圖後暫時沒用到，排清死碼工單移除）
-#[allow(dead_code)]
-pub struct EstAcc {
-    pub rate: Option<f64>,
-    pub cycle_start: i64,
-    /// 資料時間（離線帳號是換出時間）
-    pub as_of: i64,
-    /// 用量歷史裡最早的一筆；之後的用量看紀錄，不推算
-    pub first_sample: Option<i64>,
-}
-
-/// 每一天的用量：紀錄＋還沒有紀錄的那段用平均速度推算；完全看不到的日子是 None（同上，待清死碼）
-#[allow(dead_code)]
-pub fn fill_days(recorded: &[(i64, f64)], accs: &[EstAcc]) -> Vec<(i64, Option<f64>)> {
-    let coverage = accs
-        .iter()
-        .filter_map(|a| match (a.rate, a.first_sample) {
-            (Some(_), Some(f)) => Some(a.cycle_start.min(f)),
-            (Some(_), None) => Some(a.cycle_start),
-            (None, f) => f,
-        })
-        .min();
-    recorded
-        .iter()
-        .map(|&(day, used)| {
-            let end = day + DAY;
-            if coverage.map_or(true, |c| end <= c) {
-                return (day, None);
-            }
-            let est: f64 = accs
-                .iter()
-                .filter_map(|a| {
-                    let r = a.rate?;
-                    let stop = a.first_sample.map_or(a.as_of, |f| f.min(a.as_of));
-                    let overlap = end.min(stop) - day.max(a.cycle_start);
-                    (overlap > 0).then(|| r * days(overlap))
-                })
-                .sum();
-            (day, Some(used + est))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,19 +214,5 @@ mod tests {
         assert_eq!(status(&accs, Some(20.0), 27.0, 0), Status::More(7.0));
         assert_eq!(status(&accs, Some(26.0), 27.0, 0), Status::Ok);
         assert!(matches!(status(&accs, Some(80.0), 27.0, 0), Status::Short(_)));
-    }
-
-    #[test]
-    fn days_are_estimated_until_first_record() {
-        // 帳號週期從第 2 天開始、每天 20%；第 4 天中午開始有紀錄
-        let accs = [EstAcc { rate: Some(20.0), cycle_start: 2 * DAY, as_of: 5 * DAY, first_sample: Some(4 * DAY + DAY / 2) }];
-        let recorded: Vec<(i64, f64)> = (0..6).map(|i| (i * DAY, if i >= 4 { 3.0 } else { 0.0 })).collect();
-        let out = fill_days(&recorded, &accs);
-        assert_eq!(out[0], (0, None));
-        assert_eq!(out[1], (DAY, None));
-        assert_eq!(out[2], (2 * DAY, Some(20.0)));
-        assert_eq!(out[3], (3 * DAY, Some(20.0)));
-        assert_eq!(out[4], (4 * DAY, Some(13.0)));
-        assert_eq!(out[5], (5 * DAY, Some(3.0)));
     }
 }

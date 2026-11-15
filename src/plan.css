@@ -99,4 +99,3 @@
 .plan-columns > span:nth-child(3), .plan-columns > span:nth-child(6), .plan-columns > span:nth-child(7) { text-align: right; }
 .plan-columns > span:nth-child(4) { padding-left: 6px; }
 .plan-week-track { margin-left: 6px; }
-.plan-use .is-warn-text { color: #d98724; }

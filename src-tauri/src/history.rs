@@ -71,12 +71,6 @@ pub fn refunds_since(h: &[Sample], account: &str, from: i64) -> f64 {
     rows.windows(2).filter(|p| is_credit_drop(p[0], p[1])).map(|p| p[0].weekly_used - p[1].weekly_used).sum()
 }
 
-/// 某帳號最早的一筆紀錄時間（0.2.12 拿掉 7 天長條圖後暫時沒用到，排清死碼工單移除）
-#[allow(dead_code)]
-pub fn first_sample(h: &[Sample], account: &str) -> Option<i64> {
-    h.iter().filter(|s| s.account == account).map(|s| s.t).min()
-}
-
 pub fn used_between(h: &[Sample], account: &str, from: i64, to: i64) -> f64 {
     if to <= from { return 0.0; }
     let mut rows: Vec<&Sample> = h.iter().filter(|s| s.account == account && s.t >= from && s.t < to).collect();
@@ -171,7 +165,6 @@ mod tests {
         // 過了重置時間的大降＝新週期
         let h = vec![sample(0,"a","claude",90.0,Some(5)),sample(10,"a","claude",3.0,Some(5 + 604800))];
         assert_eq!(used_between(&h,"a",0,11), 3.0);
-        assert_eq!(first_sample(&h,"a"), Some(0));
     }
 
     #[test]

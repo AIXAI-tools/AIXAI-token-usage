@@ -153,35 +153,21 @@ function details(row: PlanView["rows"][number]): string {
   return `<div class="plan-detail"><div><span>${msg("detail.pace")}</span><span>${esc(outlookText(d.outlook))}</span></div>${d.credits.map(creditLine).join("")}</div>`;
 }
 
+/** 剛重置不到 12 小時：寫出何時才估得出來 */
 function formatResetRecent(cycleStart: number, now: number): string {
-  const resetD = new Date(cycleStart * 1000);
-  const readyD = new Date((cycleStart + 12 * 3600) * 1000);
+  const ready = cycleStart + 12 * 3600;
+  const readyD = new Date(ready * 1000);
   const nowD = new Date(now * 1000);
-  const sameDay =
-    resetD.getFullYear() === nowD.getFullYear() &&
-    resetD.getMonth() === nowD.getMonth() &&
-    resetD.getDate() === nowD.getDate();
   const readySameDay =
     readyD.getFullYear() === nowD.getFullYear() &&
     readyD.getMonth() === nowD.getMonth() &&
     readyD.getDate() === nowD.getDate();
-
   if (isEn()) {
-    const resetStr = sameDay ? `today ${timeOnly(cycleStart)}` : weekdayTime(cycleStart);
-    const readyStr = readySameDay ? `today ${timeOnly(cycleStart + 12 * 3600)}` : weekdayTime(cycleStart + 12 * 3600);
-    return msg("status.just_reset", { resetTime: resetStr, readyTime: readyStr });
+    return msg("status.just_reset", { readyTime: readySameDay ? `today ${timeOnly(ready)}` : weekdayTime(ready) });
   }
-  const hour = resetD.getHours();
-  const resetPrefix = sameDay ? (hour < 12 ? `今早 ${timeOnly(cycleStart)}` : `今天 ${timeOnly(cycleStart)}`) : weekdayTime(cycleStart);
-  const readyHour = readyD.getHours();
-  const readyPrefix = readySameDay
-    ? readyHour >= 18
-      ? `今晚 ${timeOnly(cycleStart + 12 * 3600)}`
-      : readyHour >= 12
-      ? `下午 ${timeOnly(cycleStart + 12 * 3600)}`
-      : `今天 ${timeOnly(cycleStart + 12 * 3600)}`
-    : weekdayTime(cycleStart + 12 * 3600);
-  return msg("status.just_reset", { resetTime: resetPrefix, readyTime: readyPrefix });
+  const h = readyD.getHours();
+  const readyPrefix = readySameDay ? `${h >= 18 ? "今晚" : h >= 12 ? "下午" : "今天"} ${timeOnly(ready)}` : weekdayTime(ready);
+  return msg("status.just_reset", { readyTime: readyPrefix });
 }
 
 /** 今天額度：今天 00:00 時剩多少平均分到重置，一整天固定；舊資料沒有就退回 target_today */
@@ -200,47 +186,40 @@ function todayBar(p: PlanView["pools"][number]): { bar: string; value: string } 
   return { bar, value };
 }
 
-/** 小字第一句：還能用 X%／今天額度用完了／超用 X%，接下來每天約 Y% */
-function budgetText(p: PlanView["pools"][number]): string {
-  const budget = Math.round(budgetOf(p));
-  const used = Math.round(p.used_today);
-  if (used < budget) return msg("budget.left", { value: budget - used });
-  if (used === budget) return msg("budget.done");
-  const after = Math.max(0, Math.round(p.after_today ?? p.target_today));
-  return msg("budget.over", { over: used - budget, after });
-}
-
 /** 12/1 */
 function monthDay(t: number): string {
   const d = new Date(t * 1000);
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function todayStatusText(p: PlanView["pools"][number], now: number): string {
+/** 小字結論（約定 §14）：照目前速度何時用完、早於何時重置／重置前還會剩多少；建議按券時多一行 */
+function outlookLines(p: PlanView["pools"][number], now: number): string[] {
   if (p.pace === null) {
     if (p.cycle_start && now - p.cycle_start < 12 * 3600 && now - p.cycle_start >= 0) {
-      return formatResetRecent(p.cycle_start, now);
+      return [esc(formatResetRecent(p.cycle_start, now))];
     }
-    return msg("status.learning");
+    return [esc(msg("status.learning"))];
   }
   const s = p.status ?? { kind: "learning" };
-  const pacePrefix = msg("status.pace_prefix", { pace: Math.round(p.pace) });
-  if (s.kind === "short") {
-    const t = weekdayTime(now + (s.value ?? 0));
-    return `${pacePrefix} · <span class="is-short">${esc(msg("status.short", { time: t }))}</span>`;
+  const reset = p.reset_at ? monthDay(p.reset_at) : null;
+  if (s.kind === "short" || s.kind === "short_credit") {
+    const time = weekdayTime(now + (s.value ?? 0));
+    const lines = [msg(reset ? "outlook.short" : "outlook.short_nodate", { time, reset: reset ?? "" })];
+    if (s.kind === "short_credit") {
+      lines.push(p.press_credit_expires ? msg("outlook.credit_on", { date: monthDay(p.press_credit_expires) }) : msg("outlook.credit"));
+    }
+    return lines;
   }
-  if (s.kind === "short_credit") {
-    const t = weekdayTime(now + (s.value ?? 0));
-    const text = p.press_credit_expires ? msg("status.short_credit_on", { time: t, date: monthDay(p.press_credit_expires) }) : msg("status.short_credit", { time: t });
-    return `${pacePrefix} · <span class="is-short_credit">${esc(text)}</span>`;
+  if (s.kind === "more" && s.leftover !== undefined) {
+    return [msg("outlook.leftover", { value: Math.round(s.leftover) })];
   }
   if (s.kind === "more") {
-    return `${pacePrefix} · <span class="is-more">${esc(msg("status.more", { value: Math.round(s.value ?? 0) }))}</span>`;
+    return [msg("status.more", { value: Math.round(s.value ?? 0) })];
   }
   if (s.kind === "ok") {
-    return `${pacePrefix} · ${msg("status.ok")}`;
+    return [msg(reset ? "outlook.ok" : "outlook.ok_nodate", { reset: reset ?? "" })];
   }
-  return `${pacePrefix} · <span class="is-learning">${msg("status.learning")}</span>`;
+  return [esc(msg("status.learning"))];
 }
 
 /** 一個平台一行：今天用量條＋目標白線，下面小字講先用誰、平均速度與夠不夠 */
@@ -257,8 +236,8 @@ function todayRow(view: PlanView, p: PlanView["pools"][number]): string {
     lines.push(`${isEn() ? "Use" : "先用"} <b>${esc(p.next)}</b>`);
   }
 
-  const st = todayStatusText(p, view.now);
-  lines.push(st ? `${budgetText(p)} · ${st}` : budgetText(p));
+  // 結論在前、帳號切換在後
+  lines.unshift(...outlookLines(p, view.now));
 
   const use = lines.length ? `<div class="plan-use">${lines.join("<br>")}</div>` : "";
   return `<div class="plan-today"><span class="plan-name">${names[p.provider] ?? p.provider}</span>${bar}${value}</div>${use}`;
@@ -269,8 +248,7 @@ function agySubRow(p: PlanView["pools"][number], now: number): string {
     return `<div class="plan-gone">${esc(statusText(p))}</div>`;
   }
   const { bar, value } = todayBar(p);
-  const st = todayStatusText(p, now);
-  const use = `<div class="plan-use">${st ? `${budgetText(p)} · ${st}` : budgetText(p)}</div>`;
+  const use = `<div class="plan-use">${outlookLines(p, now).join("<br>")}</div>`;
   return `<div class="plan-today sub"><span class="plan-name">${esc(p.group ?? "")}</span>${bar}${value}</div>${use}`;
 }
 
