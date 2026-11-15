@@ -13,6 +13,9 @@ export type ClaudeStatuslineState = {
   accounts: ClaudeStatusAccount[];
 };
 
+/** 各 Claude 帳號這次額度從哪裡來（取自 snapshot 的 source／as_of；key＝帳號 key） */
+export type ClaudeSources = Record<string, { source?: string | null; as_of?: number | null }>;
+
 const FRESH_SEC = 600;
 
 // ---- Tauri 指令包裝（指令不存在或失敗時回傳 null，不報錯） ----
@@ -80,6 +83,7 @@ export function settingsSectionHtml(
   installingId: string | null = null,
   failed: { id: string; error: string } | null = null,
   term: TermState | null = null,
+  sources: ClaudeSources = {},
 ): string {
   if (!state) return "";
   const multi = state.accounts.length > 1;
@@ -101,7 +105,15 @@ export function settingsSectionHtml(
         : acct.state === "installed"
           ? t("cs.reinstall_btn")
           : t("cs.install_btn");
-      return `<div class="srow"><span class="grow cs-label"><span>${esc(title)}</span><small>${esc(sub)}</small>${err ? `<small class="cs-err">${esc(err)}</small>` : ""}</span><button class="pill" type="button" data-cs-install="${esc(acct.id)}" ${busy ? "disabled" : ""}>${esc(btnText)}</button></div>`;
+      const src = sources[acct.id];
+      const usageTitle = multi && acctLabel ? `${t("cs.usage_label")} · ${acctLabel}` : t("cs.usage_label");
+      const usageSub = !src
+        ? { cls: "", text: t("cs.usage_every") }
+        : src.source === "live" && src.as_of != null
+          ? { cls: "cs-ok", text: t("cs.usage_ok", { time: hhmm(src.as_of) }) }
+          : { cls: "cs-warn", text: t(src.source === "statusline" ? "cs.usage_fallback" : "cs.usage_fail") };
+      const usageRow = `<div class="srow"><span class="grow cs-label"><span>${esc(usageTitle)}<span class="cs-tag main">${esc(t("cs.tag_main"))}</span></span><small class="${usageSub.cls}">${esc(usageSub.text)}</small></span></div>`;
+      return `${usageRow}<div class="srow"><span class="grow cs-label"><span>${esc(title)}<span class="cs-tag">${esc(t("cs.tag_backup"))}</span></span><small>${esc(sub)}</small><small>${esc(t("cs.backup_hint"))}</small>${err ? `<small class="cs-err">${esc(err)}</small>` : ""}</span><button class="pill" type="button" data-cs-install="${esc(acct.id)}" ${busy ? "disabled" : ""}>${esc(btnText)}</button></div>`;
     })
     .join("");
   return `<section class="sec">

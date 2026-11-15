@@ -197,6 +197,10 @@ select { height: 26px; border: 1px solid var(--btn-line); background: var(--btn)
 .cs-label { display: flex; flex-direction: column; min-width: 0; }
 .cs-label small { font-size: 11px; color: var(--muted); }
 .cs-err { color: var(--red); }
+.cs-label small.cs-ok { color: var(--tag-ok-fg); }
+.cs-label small.cs-warn { color: var(--tag-warn-fg); }
+.cs-tag { display: inline-block; font-size: 10.5px; line-height: 15px; padding: 0 5px; margin-left: 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); font-weight: 600; vertical-align: 1px; }
+.cs-tag.main { background: var(--blue); border-color: var(--blue); color: #fff; }
 
 /* 設定頁：終端機要顯示哪些 */
 .term-sec { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }

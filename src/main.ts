@@ -120,7 +120,10 @@ async function openReports() {
 }
 
 function renderSettings() {
-  renderSettingsView({ settings, upd, reportUnread: reportUnread || hasDraft(rep), addPlatform, addHint, detectMsg, ...ext });
+  const claudeSources = Object.fromEntries(
+    snapshot.providers.filter((p) => p.id === "claude").map((p) => [p.key, { source: p.source, as_of: p.as_of }]),
+  );
+  renderSettingsView({ settings, upd, reportUnread: reportUnread || hasDraft(rep), addPlatform, addHint, detectMsg, ...ext, claudeSources });
 }
 
 async function loadHint() {
