@@ -133,7 +133,7 @@ fn order_of(accs: &[Acc]) -> Vec<OrderItem> {
 }
 
 fn todo(kind: &str, provider: &str) -> Todo {
-    Todo { kind: kind.into(), provider: provider.into(), account_id: None, credit_id: None, value: None, next_account_id: None }
+    Todo { kind: kind.into(), provider: provider.into(), account_id: None, credit_id: None, value: None, next_account_id: None, at: None }
 }
 
 fn build_todos(input: &PlanInput, accs: &[Acc], order: &[OrderItem], target: f64) -> Vec<Todo> {
@@ -141,17 +141,45 @@ fn build_todos(input: &PlanInput, accs: &[Acc], order: &[OrderItem], target: f64
     let p = input.provider.as_str();
     let mut out = Vec::new();
 
-    // 1. 該按券了：快用完、有券、離重置還久
+    // 1. 按券：照平均速度推算整池何時全用完；在那時按，真正多用到 ≥ 50%（或券留著也會過期）才建議（約定 11.1）
     let mut pressed: Vec<&str> = Vec::new();
-    for a in accs {
-        let credit = a.src.credits.iter().filter(|c| schedulable(c, now)).min_by_key(|c| c.expires_at.unwrap_or(i64::MAX));
-        if let Some(c) = credit {
-            // 有速度時：其他帳號照平均速度撐得到這個帳號重置，就不用按
-            let others: Vec<(f64, i64)> = accs.iter().filter(|o| o.src.id != a.src.id).map(|o| (o.left, o.resets_at)).collect();
-            let others_last = input.pace.filter(|p| p.is_finite()).is_some_and(|p| pace::run_out(&others, p, now, a.resets_at).is_none());
-            if a.left <= 5.0 && a.resets_at - now >= MIN_CREDIT_WINDOW && !others_last {
-                pressed.push(a.src.id.as_str());
-                out.push(Todo { account_id: Some(a.src.id.clone()), credit_id: Some(c.id.clone()), value: Some(round1(a.left)), ..todo("press_credit", p) });
+    let first_credit = |a: &Acc, after: i64| a.src.credits.iter().filter(|c| schedulable(c, now) && c.expires_at.map_or(true, |e| e > after)).min_by_key(|c| c.expires_at.unwrap_or(i64::MAX)).cloned();
+    if let Some(rate) = input.pace.filter(|r| r.is_finite() && *r > 0.0) {
+        let all: Vec<(f64, i64)> = accs.iter().map(|a| (a.left, a.resets_at)).collect();
+        let until = accs.iter().map(|a| a.resets_at).max().unwrap_or(now);
+        if let Some(t_out) = pace::run_out(&all, rate, now, until) {
+            // 每個有券的帳號：在 t_out 按它的券，到它下一次重置前能補上的缺口
+            let best = accs.iter()
+                .filter_map(|a| {
+                    let c = first_credit(a, t_out)?;
+                    let reset = pace::next_reset_after(a.resets_at, t_out);
+                    Some((a, c, pace::shortfall(&all, rate, now, reset).min(100.0), reset))
+                })
+                .max_by(|x, y| x.2.total_cmp(&y.2).then(y.1.expires_at.unwrap_or(i64::MAX).cmp(&x.1.expires_at.unwrap_or(i64::MAX))));
+            match best {
+                Some((a, c, gain, reset)) if pace::worth_pressing(gain, c.expires_at, reset) => {
+                    pressed.push(a.src.id.as_str());
+                    out.push(Todo { account_id: Some(a.src.id.clone()), credit_id: Some(c.id.clone()), value: Some(round1(gain)), at: Some(t_out), ..todo("press_credit", p) });
+                }
+                Some(_) => {
+                    // 不值得按：只提醒會差多久（到最先重置的帳號補回來為止）
+                    let next = accs.iter().min_by_key(|a| pace::next_reset_after(a.resets_at, t_out));
+                    if let Some(n) = next {
+                        let gap = pace::next_reset_after(n.resets_at, t_out) - t_out;
+                        out.push(Todo { next_account_id: Some(n.src.id.clone()), value: Some(gap as f64), at: Some(t_out), ..todo("short_gap", p) });
+                    }
+                }
+                None => {}
+            }
+        }
+    } else {
+        // 還算不出速度：照舊（剩 ≤ 5%、離重置 ≥ 2 天、有券）
+        for a in accs {
+            if let Some(c) = first_credit(a, now) {
+                if a.left <= 5.0 && a.resets_at - now >= MIN_CREDIT_WINDOW {
+                    pressed.push(a.src.id.as_str());
+                    out.push(Todo { account_id: Some(a.src.id.clone()), credit_id: Some(c.id.clone()), value: Some(round1(a.left)), ..todo("press_credit", p) });
+                }
             }
         }
     }
@@ -397,6 +425,31 @@ mod tests {
         // 每天 40%：2 天就用光 → 該按
         i.pace = Some(40.0);
         assert_eq!(kinds(&plan(&i))[0], "press_credit");
+    }
+
+    #[test]
+    fn small_gap_is_a_reminder_not_a_press() {
+        // 11-15 實例：每天 47%，ist7 1%（2.44 天後重置、有券 26 天後到期）、aixa 25%（3.78 天）、ruby 87%（6.4 天）
+        // → 約 2.39 天後全用完，只比 ist7 重置早 1 小時多：按了只多用到約 3%，不值得
+        let mut i = input(vec![
+            acc("ist7", 1.0, 2.44, vec![credit("k1", "full", 26.0)]),
+            acc("aixa", 25.0, 3.78, vec![]),
+            acc("ruby", 87.0, 6.4, vec![]),
+        ]);
+        i.pace = Some(47.0);
+        let out = plan(&i);
+        assert!(!kinds(&out).contains(&"press_credit"));
+        let gap = out.todos.iter().find(|t| t.kind == "short_gap").expect("要有 short_gap");
+        assert_eq!(gap.next_account_id.as_deref(), Some("ist7"));
+        let at = gap.at.unwrap();
+        assert!(at > d(2.3) && at < d(2.44), "{at}");
+        assert!(gap.value.unwrap() < 3.0 * 3600.0);
+        // 同樣的缺口，但券 5 天後就過期（留到下週也用不到）→ 用掉
+        i.accounts[0].credits = vec![credit("k1", "full", 5.0)];
+        let out = plan(&i);
+        let press = out.todos.iter().find(|t| t.kind == "press_credit").expect("要按");
+        assert_eq!(press.at, Some(at));
+        assert!(press.value.unwrap() < 5.0);
     }
 
     #[test]

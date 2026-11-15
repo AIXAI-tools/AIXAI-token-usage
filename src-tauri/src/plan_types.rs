@@ -126,7 +126,7 @@ pub struct WeekCell {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Todo {
-    /// press_credit | credit_expiring | switch_account | behind | hold | model_credit
+    /// press_credit | short_gap | credit_expiring | switch_account | behind | hold | model_credit
     pub kind: String,
     pub provider: String,
     #[serde(default)]
@@ -136,9 +136,12 @@ pub struct Todo {
     /// 給畫面組句子的數字（例：到期秒數、落後 %、可退回 %）
     #[serde(default)]
     pub value: Option<f64>,
-    /// 接著建議用的帳號
+    /// 接著建議用的帳號（short_gap：最先重置的帳號）
     #[serde(default)]
     pub next_account_id: Option<String>,
+    /// press_credit、short_gap：整池照平均速度全用完的時間
+    #[serde(default)]
+    pub at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -416,4 +416,16 @@ mod tests {
             assert!(parse_reset_credits(&empty, "a@example.com").is_empty());
         }
     }
+
+    /// 實機檢查：讀目前登入帳號的重置券（只呼叫唯讀方法），印到期時間與 JSON；不印 email
+    #[test]
+    #[ignore]
+    fn real_codex_credits() {
+        let (_, credits) = fetch_full(None);
+        for c in &credits {
+            println!("credit {} expires_at={:?}", c.id, c.expires_at);
+        }
+        let out: Vec<ResetCredit> = credits.into_iter().map(|mut c| { c.account = String::new(); c }).collect();
+        println!("JSON={}", serde_json::to_string(&out).unwrap());
+    }
 }

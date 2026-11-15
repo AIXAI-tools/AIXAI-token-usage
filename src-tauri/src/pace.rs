@@ -60,6 +60,51 @@ pub fn run_out(accs: &[(f64, i64)], rate: f64, now: i64, until: i64) -> Option<i
     None
 }
 
+/// 照每天 rate% 用到 until，沒額度可用的那部分加總（%）；規則同 run_out
+pub fn shortfall(accs: &[(f64, i64)], rate: f64, now: i64, until: i64) -> f64 {
+    if !(rate > 0.0) || accs.is_empty() {
+        return 0.0;
+    }
+    let mut state: Vec<(f64, i64)> = accs.iter().map(|&(l, r)| (l.clamp(0.0, 100.0), r)).collect();
+    let per_hour = rate / 24.0;
+    let mut t = now;
+    let end = until.min(now + 15 * DAY);
+    let mut missing = 0.0;
+    while t < end {
+        for a in state.iter_mut() {
+            while a.1 <= t {
+                a.0 = 100.0;
+                a.1 += WEEK;
+            }
+        }
+        state.sort_by_key(|a| a.1);
+        // 最後一段不滿一小時，照比例算
+        let mut need = per_hour * ((end - t).min(HOUR) as f64 / HOUR as f64);
+        for a in state.iter_mut() {
+            let take = need.min(a.0);
+            a.0 -= take;
+            need -= take;
+        }
+        missing += need.max(0.0);
+        t += HOUR;
+    }
+    missing
+}
+
+/// 在帳號 resets_at 之後的下一次重置（已過的往後推一週）
+pub fn next_reset_after(resets_at: i64, t: i64) -> i64 {
+    let mut r = resets_at;
+    while r <= t {
+        r += WEEK;
+    }
+    r
+}
+
+/// 按完整重設值不值得（2026-11-15 定，約定 11.1）：真正多用到 ≥ 50%，或這張券在帳號下個週期結束前就過期（留著也用不到）
+pub fn worth_pressing(gain: f64, expires_at: Option<i64>, resets_at: i64) -> bool {
+    gain >= 50.0 || (gain > 0.0 && expires_at.is_some_and(|e| e <= resets_at + WEEK))
+}
+
 /// 單一帳號照自己的速度：會提早用完（回傳用完時間）、還會剩多少、或剛好
 #[derive(Debug, PartialEq)]
 pub enum Outlook {
@@ -103,7 +148,8 @@ pub fn status(accs: &[(f64, i64)], pace: Option<f64>, target: f64, now: i64) -> 
     if more >= 2.0 { Status::More(more) } else { Status::Ok }
 }
 
-/// 推算用的帳號資料
+/// 推算用的帳號資料（0.2.12 拿掉 7 天長條圖後暫時沒用到，排清死碼工單移除）
+#[allow(dead_code)]
 pub struct EstAcc {
     pub rate: Option<f64>,
     pub cycle_start: i64,
@@ -113,7 +159,8 @@ pub struct EstAcc {
     pub first_sample: Option<i64>,
 }
 
-/// 每一天的用量：紀錄＋還沒有紀錄的那段用平均速度推算；完全看不到的日子是 None
+/// 每一天的用量：紀錄＋還沒有紀錄的那段用平均速度推算；完全看不到的日子是 None（同上，待清死碼）
+#[allow(dead_code)]
 pub fn fill_days(recorded: &[(i64, f64)], accs: &[EstAcc]) -> Vec<(i64, Option<f64>)> {
     let coverage = accs
         .iter()
@@ -175,6 +222,32 @@ mod tests {
         let t = run_out(&accs, 60.0, 0, 7 * DAY).unwrap();
         assert!(t > 2 * DAY && t < 3 * DAY, "{t}");
         assert_eq!(run_out(&accs, 0.0, 0, 7 * DAY), None);
+    }
+
+    #[test]
+    fn shortfall_counts_only_the_gap() {
+        // 11-15 實例：每天 47%（約每小時 2%），ist7 1%（58.6h 重置）、aixa 25%（90.6h）、ruby 87%（153.6h）
+        // → 約 57h 全用完，到 ist7 重置只缺約 1.5 小時 ≈ 3%
+        let h = |x: f64| (x * HOUR as f64) as i64;
+        let accs = [(1.0, h(58.6)), (25.0, h(90.6)), (87.0, h(153.6))];
+        let gap = shortfall(&accs, 47.0, 0, h(58.6));
+        assert!(gap > 1.0 && gap < 4.0, "{gap}");
+        // 撐得到就沒有缺口；速度 0 也沒有
+        assert_eq!(shortfall(&accs, 20.0, 0, h(58.6)), 0.0);
+        assert_eq!(shortfall(&accs, 0.0, 0, h(58.6)), 0.0);
+        // 全空、2 天後才重置、每天 50% → 缺 100%
+        assert!((shortfall(&[(0.0, 2 * DAY)], 50.0, 0, 2 * DAY) - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pressing_worth_it() {
+        assert!(worth_pressing(60.0, None, 3 * DAY));
+        assert!(!worth_pressing(3.0, Some(40 * DAY), 3 * DAY));
+        // 券在下個週期結束前就過期：有缺口就用掉
+        assert!(worth_pressing(3.0, Some(9 * DAY), 3 * DAY));
+        assert!(!worth_pressing(0.0, Some(9 * DAY), 3 * DAY));
+        assert_eq!(next_reset_after(DAY, 3 * DAY), 8 * DAY);
+        assert_eq!(next_reset_after(5 * DAY, 3 * DAY), 5 * DAY);
     }
 
     #[test]

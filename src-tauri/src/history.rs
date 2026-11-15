@@ -71,7 +71,8 @@ pub fn refunds_since(h: &[Sample], account: &str, from: i64) -> f64 {
     rows.windows(2).filter(|p| is_credit_drop(p[0], p[1])).map(|p| p[0].weekly_used - p[1].weekly_used).sum()
 }
 
-/// 某帳號最早的一筆紀錄時間
+/// 某帳號最早的一筆紀錄時間（0.2.12 拿掉 7 天長條圖後暫時沒用到，排清死碼工單移除）
+#[allow(dead_code)]
 pub fn first_sample(h: &[Sample], account: &str) -> Option<i64> {
     h.iter().filter(|s| s.account == account).map(|s| s.t).min()
 }

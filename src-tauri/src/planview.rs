@@ -210,8 +210,53 @@ fn row_rate(r: &Row, inp: &Inputs) -> Option<f64> {
 
 /// 整池平均速度＝各帳號相加（週期錯開，相加＝每天實際消耗）；一個都算不出來是 None
 fn pool_pace(rows: &[&Row], inp: &Inputs) -> Option<f64> {
-    let rates: Vec<f64> = rows.iter().filter_map(|r| row_rate(r, inp)).collect();
+    // 週期開始不到 1 天的帳號不算進整池：幾小時的用量換算成每天會被放大（11-15 ruby 15 小時用 16% → 每天 26%，整池從 47 變 74）
+    let rates: Vec<f64> = rows.iter().filter(|r| as_of(r, inp.now) - pace::cycle_start(r.resets_at) >= DAY).filter_map(|r| row_rate(r, inp)).collect();
     (!rates.is_empty()).then(|| rates.iter().sum())
+}
+
+/// 今天額度（約定 13）：用「今天 00:00 的剩餘」（現在剩餘＋今天已用）平均分到重置，一天內固定；
+/// 券只算建議要按的（press_credit）。回傳（今天額度, 接下來每天約多少＝從現在算、同樣只算要按的券）
+fn budget(provider: &str, rows: &[&Row], inp: &Inputs, pressed: &[String]) -> (f64, f64) {
+    let start = day_start(inp.now, inp.tz_offset);
+    let mut input = plan_input(provider, rows, inp);
+    for a in input.accounts.iter_mut() {
+        a.credits.retain(|c| pressed.contains(&c.id));
+    }
+    let after = planner::plan(&input).target_today;
+    for a in input.accounts.iter_mut() {
+        let used = history::used_between(inp.history, &a.id, start, inp.now + 1);
+        a.weekly_left = (a.weekly_left + used).min(100.0);
+    }
+    input.now = start;
+    (planner::plan(&input).target_today, after)
+}
+
+/// Antigravity 每組一筆：目標＝這組剩餘 ÷ 離重置天數、速度＝這組 rate；用完的組排最後
+fn group_pools(rows: &[&Row], inp: &Inputs) -> Vec<Value> {
+    let start = day_start(inp.now, inp.tz_offset);
+    let (live, gone): (Vec<&Row>, Vec<&Row>) = rows.iter().copied().partition(|r| r.weekly_left > 0.0);
+    live.iter().chain(gone.iter()).map(|r| {
+        let left_days = (r.resets_at - inp.now).max(0) as f64 / DAY as f64;
+        let exhausted = r.weekly_left <= 0.0;
+        let target = if exhausted || left_days <= 0.0 { 0.0 } else { ((r.weekly_left / left_days.max(1.0 / 24.0)) * 10.0).round() / 10.0 };
+        let rate = if exhausted { None } else { row_rate(r, inp) };
+        let status = if exhausted {
+            json!({ "kind": "exhausted", "value": (r.resets_at - inp.now).max(0) })
+        } else {
+            status_json(pace::status(&[(r.weekly_left, r.resets_at)], rate, target, inp.now), inp.now, false)
+        };
+        let used_today = history::used_between(inp.history, &r.id, start, inp.now + 1);
+        // 今天額度：今天 00:00 的剩餘 ÷ 從 00:00 到重置的天數（一天內固定）
+        let day_left = ((r.weekly_left + used_today).min(100.0), (r.resets_at - start).max(HOUR) as f64 / DAY as f64);
+        let budget_today = if exhausted && used_today <= 0.0 { 0.0 } else { ((day_left.0 / day_left.1) * 10.0).round() / 10.0 };
+        json!({
+            "budget_today": budget_today, "after_today": target, "press_credit_expires": Value::Null,
+            "provider": "antigravity", "group": r.label, "cycle_start": pace::cycle_start(r.resets_at), "target_today": target, "target_without_credits": target,
+            "used_today": (used_today * 10.0).round() / 10.0, "feasible": true, "waste_estimate": Value::Null,
+            "current": Value::Null, "next": Value::Null, "status": status, "pace": rate.map(|p| (p * 10.0).round() / 10.0),
+        })
+    }).collect()
 }
 
 /// has_credit：池內有完整重設可用 → 不夠時改說「那時按券」
@@ -284,7 +329,7 @@ fn credit_hint(row: &Row, c: &ResetCredit, plan: &PlanOutput, now: i64) -> (&'st
         Some(0) | None => {
             if row.resets_at - now < DAY {
                 ("dont_press", None)
-            } else if row.weekly_left <= 5.0 && row.resets_at - now >= 2 * DAY {
+            } else if plan.todos.iter().any(|t| t.kind == "press_credit" && t.credit_id.as_deref() == Some(c.id.as_str())) {
                 ("press_now", None)
             } else if expiring {
                 ("expiring", None)
@@ -296,7 +341,7 @@ fn credit_hint(row: &Row, c: &ResetCredit, plan: &PlanOutput, now: i64) -> (&'st
     }
 }
 
-const TODO_ORDER: [&str; 6] = ["press_credit", "credit_expiring", "switch_account", "behind", "model_credit", "hold"];
+const TODO_ORDER: [&str; 7] = ["press_credit", "credit_expiring", "switch_account", "short_gap", "behind", "model_credit", "hold"];
 
 pub(crate) struct Built {
     pub view: Value,
@@ -312,9 +357,11 @@ pub(crate) fn build(inp: &Inputs) -> Built {
     let mut pools = Vec::new();
     let mut todos: Vec<(usize, Value)> = Vec::new();
     let mut view_rows = Vec::new();
-    let mut daily = Vec::new();
-    let mut lanes = Vec::new();
+    // 週表與 7 天長條圖已拿掉（約定 12.1），欄位先留空陣列
+    let daily: Vec<Value> = Vec::new();
+    let lanes: Vec<Value> = Vec::new();
     let mut headroom = Vec::new();
+    let mut credit_cards: Vec<Value> = Vec::new();
     let mut paces = HashMap::new();
 
     for provider in POOLS {
@@ -334,32 +381,62 @@ pub(crate) fn build(inp: &Inputs) -> Built {
         let next: Option<&Row> = if multi { others.iter().copied().find(|r| r.weekly_left >= 5.0).or(others.first().copied()) } else { None };
 
         let accs: Vec<(f64, i64)> = mine.iter().map(|r| (r.weekly_left, r.resets_at)).collect();
-        let has_credit = mine.iter().any(|r| r.credits.iter().any(|c| matches!(c.kind.as_str(), "full" | "weekly")));
+        // 「那時按券」只在值得按時說（約定 11.1）；不值得的缺口由 short_gap 提醒
+        let has_credit = plan.todos.iter().any(|t| t.kind == "press_credit");
         let status = status_json(pace::status(&accs, input.pace, plan.target_today, inp.now), inp.now, has_credit);
         if let Some(p) = input.pace {
             paces.insert(provider.to_string(), p);
         }
-        pools.push(json!({
-            "provider": provider, "target_today": plan.target_today, "target_without_credits": plan.target_without_credits,
-            "used_today": plan.used_today, "feasible": plan.feasible, "waste_estimate": plan.waste_estimate,
-            "current": current.map(|r| r.label.clone()), "next": next.map(|r| r.label.clone()),
-            "status": status, "pace": input.pace.map(|p| (p * 10.0).round() / 10.0),
-        }));
+        // 「今天還差」提醒跟今天額度用同一個數字（約定 §13）
+        let mut budget_left: Option<f64> = None;
+        if provider == "antigravity" {
+            // 組別是不同模型的額度、不能互相替代 → 每組各算一筆（約定第 10 節）
+            pools.extend(group_pools(&mine, inp));
+        } else {
+            let pressed: Vec<String> = plan.todos.iter().filter(|t| t.kind == "press_credit").filter_map(|t| t.credit_id.clone()).collect();
+            let (budget_today, after_today) = budget(provider, &mine, inp, &pressed);
+            budget_left = Some(((budget_today - plan.used_today) * 10.0).round() / 10.0);
+            let press_credit_expires = plan.todos.iter().find(|t| t.kind == "press_credit")
+                .and_then(|t| mine.iter().flat_map(|r| r.credits.iter()).find(|c| Some(&c.id) == t.credit_id.as_ref()))
+                .and_then(|c| c.expires_at);
+            pools.push(json!({
+                "budget_today": budget_today, "after_today": after_today, "press_credit_expires": press_credit_expires,
+                "provider": provider, "target_today": plan.target_today, "target_without_credits": plan.target_without_credits,
+                "used_today": plan.used_today, "feasible": plan.feasible, "waste_estimate": plan.waste_estimate,
+                "current": current.map(|r| r.label.clone()), "next": next.map(|r| r.label.clone()),
+                "status": status, "pace": input.pace.map(|p| (p * 10.0).round() / 10.0), "cycle_start": Value::Null,
+            }));
+        }
 
         for t in &plan.todos {
+            if t.kind == "behind" && budget_left.is_some_and(|v| v <= 0.0) { continue; }
             let row = t.account_id.as_deref().and_then(by_id);
             let credit = row.and_then(|r| t.credit_id.as_ref().and_then(|id| r.credits.iter().find(|c| &c.id == id)));
             let wants_url = matches!(t.kind.as_str(), "press_credit" | "credit_expiring" | "model_credit");
             let rank = TODO_ORDER.iter().position(|k| *k == t.kind).unwrap_or(TODO_ORDER.len());
+            let next_row = t.next_account_id.as_deref().and_then(by_id);
+            let refund = match (row, credit) { (Some(r), Some(c)) if c.kind == "model" => Some(refund_of(inp, r, c)), _ => None };
+            // 要自動展開「提醒」：有用的券 24 小時內到期，或現在就該按（約定 11.2）
+            let urgent = match t.kind.as_str() {
+                "credit_expiring" => credit.is_some_and(|c| c.expires_at.is_some_and(|e| e - inp.now <= DAY) && (c.kind != "model" || refund.unwrap_or(0.0) >= 5.0)),
+                "press_credit" => t.at.is_some_and(|a| a - inp.now <= HOUR),
+                _ => false,
+            };
+            let key = match (&t.credit_id, row) {
+                // 手動券 id 是「登錄 id:email」，只留登錄 id（不把 email 存進 localStorage）
+                (Some(c), Some(r)) => format!("{}:{}:{}", t.kind, c.split(':').next().unwrap_or(c), r.label),
+                _ => format!("{}:{}", t.kind, provider),
+            };
             todos.push((rank, json!({
-                "kind": t.kind, "provider": provider,
+                "kind": t.kind, "provider": provider, "key": key, "urgent": urgent, "at": t.at,
                 "account_label": row.map(|r| r.label.clone()),
-                "next_label": t.next_account_id.as_deref().and_then(by_id).map(|r| r.label.clone()),
+                "next_label": next_row.map(|r| r.label.clone()),
+                "next_reset_at": if t.kind == "short_gap" { next_row.map(|r| pace::next_reset_after(r.resets_at, t.at.unwrap_or(inp.now))) } else { None },
                 "credit_kind": credit.map(|c| c.kind.clone()),
                 "model": credit.and_then(|c| c.model.clone()),
                 "expires_at": credit.and_then(|c| c.expires_at),
-                "value": t.value,
-                "refund": match (row, credit) { (Some(r), Some(c)) if c.kind == "model" => Some(refund_of(inp, r, c)), _ => None },
+                "value": if t.kind == "behind" { budget_left.or(t.value) } else { t.value },
+                "refund": refund,
                 "url": if wants_url { usage_url(provider) } else { None },
             })));
         }
@@ -400,24 +477,31 @@ pub(crate) fn build(inp: &Inputs) -> Built {
             }));
         }
 
-        if provider != "antigravity" {
-            let ids: Vec<String> = mine.iter().map(|r| r.id.clone()).collect();
-            let recorded = history::daily_totals(inp.history, &ids, 7, inp.tz_offset, inp.now);
-            let est: Vec<pace::EstAcc> = mine.iter().map(|r| pace::EstAcc {
-                rate: row_rate(r, inp), cycle_start: pace::cycle_start(r.resets_at), as_of: as_of(r, inp.now),
-                first_sample: history::first_sample(inp.history, &r.id),
-            }).collect();
-            // 沒資料的日子 used＝null（畫空框），不畫成 0%
-            let days: Vec<Value> = pace::fill_days(&recorded, &est).iter()
-                .map(|(d, u)| json!({ "day": d, "used": u.map(|u| (u * 10.0).round() / 10.0) })).collect();
-            daily.push(json!({ "provider": provider, "target": plan.target_today, "days": days }));
-            for o in &plan.order {
-                let Some(r) = by_id(&o.id) else { continue };
-                let cells: Vec<Value> = plan.weeks.iter().filter(|w| w.account_id == r.id && w.index < 4)
-                    .map(|w| json!({ "base": w.base.round(), "credits": w.credit_ids.len() })).collect();
-                lanes.push(json!({ "provider": provider, "label": r.label, "cells": cells }));
+        // 券：每張還沒按的一行；同帳號同種類同模型的合併（約定 12.1，取代週表）
+        let ordered_rows: Vec<&Row> = current.into_iter().chain(plan.order.iter().filter(|o| Some(o.id.as_str()) != current_id).filter_map(|o| by_id(&o.id))).collect();
+        for r in ordered_rows {
+            let mut mine_cards: Vec<Value> = Vec::new();
+            let mut cs: Vec<&ResetCredit> = r.credits.iter().filter(|c| c.expires_at.map_or(true, |e| e > inp.now)).collect();
+            cs.sort_by_key(|c| c.expires_at.unwrap_or(i64::MAX));
+            for c in cs {
+                let (hint, _) = credit_hint(r, c, &plan, inp.now);
+                let hint = if hint == "scheduled" { "hold" } else { hint };
+                let press_at = plan.todos.iter().find(|t| t.kind == "press_credit" && t.credit_id.as_deref() == Some(c.id.as_str())).and_then(|t| t.at);
+                // 只合併「到期時間也一樣」的完整重設：到期不同要各自一行，不然較晚的日期會看不到（11-15 Codex 12/2、12/13 被併成一行）
+                let mergeable = matches!(c.kind.as_str(), "full" | "weekly");
+                if let Some(same) = mine_cards.iter_mut().find(|v| mergeable && v["kind"] == c.kind.as_str() && v["hint"] == hint && v["expires_at"] == json!(c.expires_at)) {
+                    same["count"] = json!(same["count"].as_u64().unwrap_or(1) + 1);
+                    continue;
+                }
+                mine_cards.push(json!({
+                    "provider": provider, "account_label": r.label, "kind": c.kind, "model": c.model, "count": 1,
+                    "expires_at": c.expires_at, "hint": hint, "press_at": press_at,
+                    "refund": if c.kind == "model" { Some(refund_of(inp, r, c)) } else { None },
+                }));
             }
+            credit_cards.extend(mine_cards);
         }
+
         let spare = plan.target_today - plan.used_today;
         if spare >= 1.0 {
             headroom.push(json!({ "provider": provider, "percent": spare.round() }));
@@ -432,7 +516,7 @@ pub(crate) fn build(inp: &Inputs) -> Built {
     let view = json!({
         "now": inp.now, "pools": pools, "todos": todos, "rows": view_rows,
         "plan": { "daily": daily, "lanes": lanes, "headroom": headroom },
-        "manual_credits": inp.manual, "claude_accounts": claude_accounts,
+        "manual_credits": inp.manual, "claude_accounts": claude_accounts, "credits": credit_cards,
     });
     Built { view, rows: all, plans, paces }
 }
@@ -469,22 +553,37 @@ pub(crate) fn notices(rows: &[Row], plans: &[PlanOutput], paces: &HashMap<String
             continue;
         }
         let left = r.resets_at - now;
-        let has_credit = r.credits.iter().any(|c| matches!(c.kind.as_str(), "full" | "weekly") && c.expires_at.map_or(true, |t| t > now));
+        let credit = r.credits.iter().filter(|c| matches!(c.kind.as_str(), "full" | "weekly") && c.expires_at.map_or(true, |t| t > now)).min_by_key(|c| c.expires_at.unwrap_or(i64::MAX));
+        let has_credit = credit.is_some();
         // 跟面板的「接著」同一規則：剩不到 5% 的跳過，沒別的才選
         let cands: Vec<&OrderItem> = plans.iter().find(|p| p.provider == r.provider).map(|p| p.order.iter().filter(|o| !o.exhausted && o.id != r.id).collect()).unwrap_or_default();
         let next = cands.iter().copied().find(|o| o.weekly_left >= 5.0).or(cands.first().copied());
         let others: Vec<(f64, i64)> = rows.iter().filter(|o| o.provider == r.provider && o.id != r.id).map(|o| (o.weekly_left, o.resets_at)).collect();
-        let covered = paces.get(&r.provider).map(|p| pace::run_out(&others, *p, now, r.resets_at).is_none());
+        let pace_now = paces.get(&r.provider).copied();
+        let covered = pace_now.map(|p| pace::run_out(&others, p, now, r.resets_at).is_none());
+        // 撐不到時：在其他帳號用完那刻按這個帳號的券，能多用到多少；不值得就不叫按（約定 11.1）
+        let gain = pace_now.map_or(0.0, |p| pace::shortfall(&others, p, now, r.resets_at).min(100.0));
+        let worth = credit.is_some_and(|c| pace::worth_pressing(gain, c.expires_at, r.resets_at));
+        let others_out = pace_now.and_then(|p| pace::run_out(&others, p, now, r.resets_at));
         let switch = next.map(|o| if zh { format!("改用 {}。", o.label) } else { format!(" Switch to {}.", o.label) }).unwrap_or_default();
         let title = if zh { format!("{} {} 本週用完了", pname(&r.provider), r.label) } else { format!("{} {}: weekly limit used up", pname(&r.provider), r.label) };
-        let press = has_credit && left >= 2 * DAY;
+        let press = if covered.is_some() { worth } else { has_credit && left >= 2 * DAY };
+        let when = others_out.filter(|t| *t - now > HOUR).map(|t| fmt_left(t - now));
         // 要按券的才停留並附按鈕；只是告知的照舊會自己收起
         let stay = press && covered != Some(true);
         let body = match (covered, zh) {
             (Some(true), true) => format!("其他帳號撐得到重置，不用按券。{switch}"),
             (Some(true), false) => format!("Other accounts will last until the reset; no need to use a reset.{switch}"),
-            (Some(false), true) if press => format!("其他帳號撐不到重置。現在按 {} 的完整重設最划算。", r.label),
-            (Some(false), false) if press => format!("Other accounts won't last until the reset. Use {}'s reset now.", r.label),
+            (Some(false), true) if press => match &when {
+                Some(w) => format!("其他帳號約 {w} 後用完，那時按 {} 的完整重設，可以多用約 {:.0}%。{switch}", r.label, gain),
+                None => format!("其他帳號撐不到重置。現在按 {} 的完整重設，可以多用約 {:.0}%。", r.label, gain),
+            },
+            (Some(false), false) if press => match &when {
+                Some(w) => format!("Other accounts run out in about {w}; use {}'s reset then (about {:.0}% more).{switch}", r.label, gain),
+                None => format!("Other accounts won't last until the reset. Use {}'s reset now (about {:.0}% more).", r.label, gain),
+            },
+            (Some(false), true) if has_credit => format!("會差約 {:.0}%，不值得按券：少用一點，或改用其他 AI。{} 後重置。{switch}", gain, fmt_left(left)),
+            (Some(false), false) if has_credit => format!("About {:.0}% short; not worth a reset. Slow down or use another AI. Resets in {}.{switch}", gain, fmt_left(left)),
             (Some(false), true) => format!("其他帳號撐不到重置，{} 後才重置。{switch}", fmt_left(left)),
             (Some(false), false) => format!("Other accounts won't last; resets in {}.{switch}", fmt_left(left)),
             // 還算不出速度：照重置時間判斷
@@ -813,13 +912,70 @@ mod tests {
     }
 
     #[test]
+    fn budget_today_stays_fixed_while_using() {
+        // Argon 11-15 實例：今天用了 45%、現在剩 55%、離重置約 6.9 天 → 額度照今天 00:00 的 100% 算（約 14），不是 55 ÷ 6.9（約 8）
+        let start = day_start(NOW, 0);
+        let reset = start + 7 * DAY;
+        let providers = vec![prov("antigravity", "antigravity:me", "me@example.com", "live", vec![win(10080, 45.0, reset, Some("Gemini 4 Argon"))])];
+        let id = "antigravity:me@example.com:Gemini 4 Argon".to_string();
+        let s = |t: i64, used: f64| Sample { t, account: id.clone(), provider: "antigravity".into(), weekly_used: used, weekly_resets_at: Some(reset), five_used: None };
+        let mk = |hist: &[Sample]| {
+            let b = build(&Inputs { providers: &providers, emails: &HashMap::new(), codex_credits: &[], manual: &[], history: hist, shares: &HashMap::new(), now: NOW, tz_offset: 0 });
+            b.view["pools"][0].clone()
+        };
+        let rows = rows(&Inputs { providers: &providers, emails: &HashMap::new(), codex_credits: &[], manual: &[], history: &[], shares: &HashMap::new(), now: NOW, tz_offset: 0 });
+        assert_eq!(rows[0].id, id, "測試的帳號 id 要對上");
+        let p = mk(&[s(start + 60, 0.0), s(NOW - 60, 45.0)]);
+        assert_eq!(p["used_today"], 45.0);
+        let expect = 100.0 / ((reset - start) as f64 / DAY as f64);
+        assert!((p["budget_today"].as_f64().unwrap() - (expect * 10.0).round() / 10.0).abs() < 0.11, "{p}");
+        // 接下來每天約多少＝現在剩 55% ÷ 剩下天數
+        let after = 55.0 / ((reset - NOW) as f64 / DAY as f64);
+        assert!((p["after_today"].as_f64().unwrap() - after).abs() < 0.11, "{p}");
+        // 今天還沒用時算出的額度一樣（一整天固定）
+        let p0 = mk(&[s(start + 60, 0.0)]);
+        let _ = p0;
+    }
+
+    #[test]
+    fn antigravity_pace_per_group() {
+        // 11-15 實例：Gemini 剩 95%、週期過了約 1.1 天（每天約 4.5%）、5.9 天後重置；Argon 剛重置；Claude/GPT 用完、3.6 天後重置
+        let reset_g = NOW + (5.9 * DAY as f64) as i64;
+        let providers = vec![prov("antigravity", "antigravity:me", "me@example.com", "live", vec![
+            win(300, 5.0, NOW + HOUR, Some("Gemini")), win(10080, 5.0, reset_g, Some("Gemini")),
+            win(10080, 100.0, NOW + (3.6 * DAY as f64) as i64, Some("Claude and GPT")),
+            win(10080, 0.0, NOW + 7 * DAY - HOUR, Some("Gemini 4 Argon")),
+        ])];
+        let b = build(&Inputs { providers: &providers, emails: &HashMap::new(), codex_credits: &[], manual: &[], history: &[], shares: &HashMap::new(), now: NOW, tz_offset: 0 });
+        let pools = b.view["pools"].as_array().unwrap();
+        let groups: Vec<&str> = pools.iter().map(|p| p["group"].as_str().unwrap()).collect();
+        assert_eq!(groups, ["Gemini", "Argon", "Claude/GPT"]);
+        // Gemini：目標 95 ÷ 5.9 ≈ 16.1、速度 5 ÷ 1.1 ≈ 4.5 → 用不完（不能是「達標」）
+        assert_eq!(pools[0]["target_today"], 16.1);
+        assert_eq!(pools[0]["pace"], 4.5);
+        assert_eq!(pools[0]["status"]["kind"], "more");
+        assert_eq!(pools[0]["status"]["value"], 12.0);
+        // Argon：剛重置 → 還在累積資料、目標 100 ÷ 6.96
+        assert!(pools[1]["pace"].is_null());
+        assert_eq!(pools[1]["status"]["kind"], "learning");
+        assert_eq!(pools[1]["target_today"], 14.4);
+        // Claude/GPT：用完 → exhausted＋離重置秒數，沒有速度
+        assert_eq!(pools[2]["status"]["kind"], "exhausted");
+        assert_eq!(pools[2]["status"]["value"], (3.6 * DAY as f64) as i64);
+        assert!(pools[2]["pace"].is_null());
+        assert_eq!(pools[2]["target_today"], 0.0);
+        assert!(pools.iter().all(|p| p["current"].is_null() && p["next"].is_null()));
+    }
+
+    #[test]
     fn builds_rows_pools_and_todos() {
         let (providers, emails, codex, manual) = fixture();
         let shares = HashMap::from([("claude:b@example.com".to_string(), vec![ModelShare { family: "opus".into(), percent_of_week: 15.0 }, ModelShare { family: "fable".into(), percent_of_week: 9.0 }])]);
         let b = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &manual, history: &[], shares: &shares, now: NOW, tz_offset: 0 });
         assert_eq!(b.rows.len(), 5);
         let v = &b.view;
-        assert_eq!(v["pools"].as_array().unwrap().len(), 3);
+        // Claude、Codex 各一筆＋Antigravity 兩組各一筆
+        assert_eq!(v["pools"].as_array().unwrap().len(), 4);
         // Claude：現在登入的 a（已用完）排第一並標記，接著換離線的 b
         let claude: Vec<&Value> = v["rows"].as_array().unwrap().iter().filter(|r| r["provider"] == "claude").collect();
         assert_eq!(claude[0]["account_id"], "claude:a@example.com");
@@ -846,8 +1002,21 @@ mod tests {
         // 該做的事最多 3 條，該按券排最前面
         let todos = v["todos"].as_array().unwrap();
         assert_eq!(todos.len(), 3);
+        // Codex 每天 22%：2.5 天後用完、5 天才重置 → 那時按券能多用約 55% → 值得
         assert_eq!(todos[0]["kind"], "press_credit");
-        assert_eq!(todos[0]["url"], CLAUDE_USAGE_URL);
+        assert_eq!(todos[0]["provider"], "codex");
+        assert_eq!(todos[0]["url"], CODEX_USAGE_URL);
+        assert!(todos[0]["at"].as_i64().unwrap() > NOW);
+        assert!(todos[0]["key"].as_str().unwrap().starts_with("press_credit:rc1:"));
+        // Claude 的缺口只有約 29% → 不叫按券，改成提醒差多久（到 a 重置）
+        let claude_todos: Vec<&str> = todos.iter().filter(|t| t["provider"] == "claude").map(|t| t["kind"].as_str().unwrap()).collect();
+        assert!(!claude_todos.contains(&"press_credit"), "{claude_todos:?}");
+        // short_gap 排在換帳號之後，可能被 3 條上限截掉；有的話欄位要對
+        if let Some(g) = todos.iter().find(|t| t["kind"] == "short_gap") {
+            assert_eq!(g["next_label"], "a");
+            assert_eq!(g["next_reset_at"], NOW + 3 * DAY);
+            assert_eq!(g["urgent"], false);
+        }
         assert_eq!(v["claude_accounts"].as_array().unwrap().len(), 2);
     }
 
@@ -951,7 +1120,7 @@ mod tests {
         // 每天 60% → 撐不到，按 a 的完整重設 → 停留型
         let fast = HashMap::from([("claude".to_string(), 60.0)]);
         let n = notices(&b.rows, &b.plans, &fast, NOW, true, &mut HashSet::new());
-        assert!(n[0].body.contains("撐不到重置") && n[0].body.contains("按 a 的完整重設"), "{n:?}");
+        assert!(n[0].body.contains("後用完，那時按 a 的完整重設"), "{n:?}");
         assert!(n[0].stay && n[0].buttons[0].1 == "open:claude");
     }
 
@@ -1010,10 +1179,45 @@ mod tests {
         assert_eq!(a["five_resets_at"], NOW + 3 * HOUR);
         let codex_row = b.view["rows"].as_array().unwrap().iter().find(|r| r["provider"] == "codex").unwrap();
         assert!(codex_row["five_resets_at"].is_null());
-        // 長條：週期開始前的日子是 null，週期內的有推算值
-        let days = b.view["plan"]["daily"].as_array().unwrap().iter().find(|d| d["provider"] == "claude").unwrap()["days"].as_array().unwrap().clone();
-        assert!(days[0]["used"].is_null());
-        assert!(days[6]["used"].as_f64().unwrap() > 0.0);
+        // 週表與 7 天長條圖拿掉了（約定 12.1）
+        assert!(b.view["plan"]["daily"].as_array().unwrap().is_empty());
+        assert!(b.view["plan"]["lanes"].as_array().unwrap().is_empty());
+        // 券一張一行：Claude 的 a、b 各有完整重設＋Fable，Codex 一張；Claude 在前
+        let credits = b.view["credits"].as_array().unwrap();
+        assert_eq!(credits.len(), 5, "{credits:?}");
+        assert_eq!(credits[0]["provider"], "claude");
+        assert_eq!(credits.last().unwrap()["provider"], "codex");
+        assert!(credits.iter().all(|c| c["hint"] != "scheduled" && c["count"] == 1));
+        let fable = credits.iter().find(|c| c["kind"] == "model").unwrap();
+        assert!(fable["refund"].is_number());
+        // Antigravity 每組有週期開始時間；Claude／Codex 沒有
+        let pools = b.view["pools"].as_array().unwrap();
+        assert_eq!(pools.iter().find(|p| p["group"] == "Gemini").unwrap()["cycle_start"], NOW - DAY);
+        assert!(pools.iter().find(|p| p["provider"] == "claude").unwrap()["cycle_start"].is_null());
+    }
+
+    #[test]
+    fn same_full_credits_merge_into_one_line() {
+        let (providers, emails, mut codex, manual) = fixture();
+        let mut second = codex[0].clone();
+        second.id = "rc2".into();
+        second.expires_at = Some(NOW + 30 * DAY);
+        codex.push(second);
+        let empty = HashMap::new();
+        let b = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &manual, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        let mine: Vec<&Value> = b.view["credits"].as_array().unwrap().iter().filter(|c| c["provider"] == "codex").collect();
+        // 到期不同 → 各自一行，兩個日期都看得到
+        assert_eq!(mine.len(), 2);
+        assert!(mine.iter().all(|c| c["count"] == 1));
+        assert!(mine.iter().any(|c| c["expires_at"] == NOW + 30 * DAY));
+        // 到期完全一樣才合併成 ×2
+        let (providers, emails, mut codex, manual) = fixture();
+        let mut twin = codex[0].clone();
+        twin.id = "rc3".into();
+        codex.push(twin);
+        let b = build(&Inputs { providers: &providers, emails: &emails, codex_credits: &codex, manual: &manual, history: &[], shares: &empty, now: NOW, tz_offset: 0 });
+        let total: u64 = b.view["credits"].as_array().unwrap().iter().filter(|c| c["provider"] == "codex").map(|c| c["count"].as_u64().unwrap()).sum();
+        assert_eq!(total, 2);
     }
 
     #[test]

@@ -5,7 +5,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { $, dict, esc, zhTW } from "./util";
 import { overviewHtml } from "./views/overview";
-import { planHtml } from "./views/plan";
 import type { PlanView } from "./views/planTypes";
 import { creditsHtml, ct, readForm, type CreditFormState, type CreditKind } from "./views/credits";
 
@@ -14,17 +13,20 @@ type Deps = { getView: () => string; fit: () => void };
 
 let planView: PlanView | null = null;
 let cfg: PlanCfg = { model_usage: true };
-let tab: "now" | "plan" = "now";
 let expanded: string | null = null;
 // 收起的群組（CLAUDE、CODEX…），記在這台電腦，下次開面板一樣
 const GROUPS_KEY = "plan.collapsed";
 let collapsed = new Set<string>(loadCollapsed());
 function loadCollapsed(): string[] {
   try {
-    const v = JSON.parse(localStorage.getItem(GROUPS_KEY) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    const raw = localStorage.getItem(GROUPS_KEY);
+    if (raw === null) {
+      return ["__reminders", "__credits"];
+    }
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : ["__reminders", "__credits"];
   } catch {
-    return [];
+    return ["__reminders", "__credits"];
   }
 }
 function saveCollapsed() {
@@ -33,6 +35,53 @@ function saveCollapsed() {
   } catch {
     // 存不了就只在這次有效
   }
+}
+
+const AUTO_OPENED_KEY = "plan.autoOpened";
+function loadAutoOpened(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(AUTO_OPENED_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function saveAutoOpened(list: string[]) {
+  try {
+    localStorage.setItem(AUTO_OPENED_KEY, JSON.stringify(list.slice(-20)));
+  } catch {
+    // 存不了就只在這次有效
+  }
+}
+
+function resolveRemindersOpen(todos: PlanView["todos"]): boolean {
+  let autoOpened = loadAutoOpened();
+  let changed = false;
+  let forceOpen = false;
+
+  todos.forEach((t, i) => {
+    if (t.urgent) {
+      const key = t.key ?? `${t.kind}:${i}`;
+      if (!autoOpened.includes(key)) {
+        forceOpen = true;
+        autoOpened.push(key);
+        changed = true;
+      }
+    }
+  });
+
+  if (changed) {
+    if (autoOpened.length > 20) autoOpened = autoOpened.slice(-20);
+    saveAutoOpened(autoOpened);
+  }
+
+  if (forceOpen) {
+    if (collapsed.delete("__reminders")) {
+      saveCollapsed();
+    }
+  }
+
+  return !collapsed.has("__reminders");
 }
 let form: CreditFormState = {};
 let usedPick: string | null = null;
@@ -45,8 +94,8 @@ const tzOffset = () => -new Date().getTimezoneOffset() * 60;
 function paintMain() {
   const groups = $("groups");
   if (!planView || deps.getView() !== "main" || groups.querySelector(".plan-root")) return;
-  const tabs = `<div class="plan-tabs"><button type="button" data-act="plan-tab" data-id="now" class="${tab === "now" ? "on" : ""}">${zh() ? "現在" : "Now"}</button><button type="button" data-act="plan-tab" data-id="plan" class="${tab === "plan" ? "on" : ""}">${zh() ? "計畫" : "Plan"}</button></div>`;
-  groups.innerHTML = `<div class="plan-root">${tabs}${tab === "now" ? overviewHtml(planView, expanded, collapsed) : planHtml(planView)}</div>`;
+  const remindersOpen = resolveRemindersOpen(planView.todos ?? []);
+  groups.innerHTML = `<div class="plan-root">${overviewHtml(planView, expanded, collapsed, remindersOpen)}</div>`;
   deps.fit();
 }
 
@@ -160,8 +209,7 @@ function onMainClick(e: Event) {
   const el = (e.target as HTMLElement).closest<HTMLElement>(".plan-root [data-act]");
   if (!el) return;
   const act = el.dataset.act;
-  if (act === "plan-tab") tab = el.dataset.id === "plan" ? "plan" : "now";
-  else if (act === "toggle-row") expanded = expanded === el.dataset.id ? null : (el.dataset.id ?? null);
+  if (act === "toggle-row") expanded = expanded === el.dataset.id ? null : (el.dataset.id ?? null);
   else if (act === "toggle-group") {
     const g = el.dataset.id ?? "";
     if (!collapsed.delete(g)) collapsed.add(g);
