@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import creditsEn from "../i18n/credits.en.json";
 import creditsZh from "../i18n/credits.zh.json";
 import { dict, esc, hhmm, mmdd, t, zhTW } from "../util";
@@ -66,20 +65,6 @@ export function ct(key: string, vars: Record<string, string | number> = {}): str
   let s = table[key] ?? key;
   for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
   return s;
-}
-
-// ---- Tauri 指令包裝（失敗回 null，不報錯） ----
-
-export function addManualCredit(credit: ManualCreditInput): Promise<string | null> {
-  return invoke<string>("add_manual_credit", { credit }).catch(() => null);
-}
-
-export function removeManualCredit(id: string): Promise<boolean | null> {
-  return invoke<boolean>("remove_manual_credit", { id }).catch(() => null);
-}
-
-export function markCreditUsed(id: string, account: string): Promise<boolean | null> {
-  return invoke<boolean>("mark_credit_used", { id, account }).catch(() => null);
 }
 
 // ---- 純函式：HTML 產生與表單驗證 ----

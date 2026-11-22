@@ -85,6 +85,8 @@
 .plan-cells > span { padding: 6px 2px; border-radius: 5px; background: color-mix(in srgb, var(--line) 55%, var(--bg)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .plan-cells > .has-credit { background: color-mix(in srgb, #468bd1 16%, var(--bg)); }
 @media (max-width: 380px) { .plan-columns, .plan-account { grid-template-columns: 8px minmax(48px, 1fr) 42px minmax(34px, .8fr) 34px 42px 25px; gap: 3px; font-size: 10px; } }
+/* 英文固定欄須容納完整表頭；剩餘空間仍由進度條欄吸收。 */
+html:lang(en) .plan-columns, html:lang(en) .plan-account { grid-template-columns: 10px 80px 42px minmax(68px, 1fr) 40px 70px 40px; }
 
 .plan-tabs { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
 .plan-tabs button { border: 0; background: none; padding: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }

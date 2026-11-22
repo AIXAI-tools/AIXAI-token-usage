@@ -5,7 +5,7 @@ use crate::model::{mask_email, Snapshot};
 use crate::refresh::{do_refresh, emit_snapshot, refresh_soon};
 use crate::snapshot::rebuild_offline_cards;
 use crate::state::{zh_of, AppState};
-use crate::tray::{change_language, place_panel, reveal_panel, PANEL, PANEL_WIDTH};
+use crate::tray::{change_language, panel_width, place_panel, reveal_panel, PANEL};
 use crate::applog;
 use serde::Serialize;
 use tauri::{AppHandle, LogicalSize, Manager, State};
@@ -103,7 +103,8 @@ pub(crate) async fn refresh(app: AppHandle) -> Result<Snapshot, String> {
 pub(crate) fn panel_resize(app: AppHandle, height: f64) {
     let Some(win) = app.get_webview_window(PANEL) else { return };
     let h = height.clamp(120.0, 900.0);
-    let _ = win.set_size(LogicalSize::new(PANEL_WIDTH, h));
+    let width = panel_width(zh_of(&app.state::<AppState>().config.lock().unwrap()));
+    let _ = win.set_size(LogicalSize::new(width, h));
     place_panel(&win);
     reveal_panel(&app);
 }

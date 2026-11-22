@@ -14,7 +14,10 @@ use tauri_plugin_autostart::ManagerExt;
 
 pub(crate) const TRAY_ID: &str = "main";
 pub(crate) const PANEL: &str = "panel";
-pub(crate) const PANEL_WIDTH: f64 = 336.0;
+/// 依實際生效語言選擇邏輯寬度；英文寬度由現有表頭與欄距量測。
+pub(crate) fn panel_width(zh: bool) -> f64 {
+    if zh { 336.0 } else { 440.0 }
+}
 
 /// 每個平台取所有「顯示中」帳號的最低剩餘 %
 pub(crate) fn lefts(snap: &Snapshot) -> [Option<f64>; 3] {
@@ -45,12 +48,29 @@ pub(crate) fn update_tray(app: &AppHandle, snap: &Snapshot) {
 /// 面板貼在螢幕工作區（不含工作列）的右下角
 pub(crate) fn place_panel(win: &WebviewWindow) {
     let monitor = win.current_monitor().ok().flatten().or_else(|| win.primary_monitor().ok().flatten());
-    let (Some(m), Ok(size)) = (monitor, win.outer_size()) else { return };
+    let (Some(m), Ok(mut size)) = (monitor, win.outer_size()) else { return };
     let area = m.work_area();
+    // 工作區比面板還小時先縮到放得下，再貼齊右下角。
+    if size.width > area.size.width || size.height > area.size.height {
+        if let Ok(inner) = win.inner_size() {
+            let fitted = tauri::PhysicalSize::new(
+                inner.width.saturating_sub(size.width.saturating_sub(area.size.width)).max(1),
+                inner.height.saturating_sub(size.height.saturating_sub(area.size.height)).max(1),
+            );
+            if win.set_size(fitted).is_ok() {
+                size.width = size.width.min(area.size.width);
+                size.height = size.height.min(area.size.height);
+            }
+        }
+    }
     let margin = (12.0 * m.scale_factor()) as i32;
-    let x = area.position.x + area.size.width as i32 - size.width as i32 - margin;
-    let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
+    let x = panel_axis(area.position.x, area.size.width, size.width, margin);
+    let y = panel_axis(area.position.y, area.size.height, size.height, margin);
     let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+fn panel_axis(origin: i32, available: u32, size: u32, margin: i32) -> i32 {
+    origin + (available as i32 - size as i32 - margin).max(0)
 }
 
 // 省記憶體：面板（WebView2，約 65 MB）只在打開時存在；收起就整個關掉，背景只剩主程式（約 4 MB）。
@@ -85,11 +105,12 @@ pub(crate) fn toggle_panel(app: &AppHandle) {
 }
 
 pub(crate) fn open_panel(app: &AppHandle) {
+    let width = panel_width(zh_of(&app.state::<AppState>().config.lock().unwrap()));
     PANEL_PENDING.store(true, Ordering::SeqCst);
     PANEL_STICKY.store(false, Ordering::SeqCst); // 前端還原頁面後會再設定
     let built = WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("index.html".into()))
         .title("AIXAI Token Usage")
-        .inner_size(PANEL_WIDTH, 420.0)
+        .inner_size(width, 420.0)
         .visible(false)
         .decorations(false)
         .resizable(false)
@@ -180,6 +201,13 @@ pub(crate) fn change_language(app: &AppHandle, lang: &str) {
         let _ = c.save(&state.config_path);
     }
     apply_menu_language(app);
+    if let Some(win) = app.get_webview_window(PANEL) {
+        let width = panel_width(zh_of(&app.state::<AppState>().config.lock().unwrap()));
+        if let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) {
+            let _ = win.set_size(tauri::LogicalSize::new(width, size.height as f64 / scale));
+            place_panel(&win);
+        }
+    }
     let _ = app.emit_to(PANEL, "settings-changed", ());
 }
 
@@ -252,6 +280,27 @@ pub(crate) fn build_tray(app: &mut tauri::App, zh: bool, lang: &str) -> tauri::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn width_follows_effective_language() {
+        use crate::state::zh_for_language;
+        assert_eq!(panel_width(zh_for_language("zh-TW", false)), 336.0);
+        assert_eq!(panel_width(zh_for_language("en", true)), 440.0);
+        assert_eq!(panel_width(zh_for_language("system", true)), 336.0);
+        assert_eq!(panel_width(zh_for_language("system", false)), 440.0);
+    }
+
+    #[test]
+    fn placement_stays_in_work_area() {
+        for (origin, available, size, margin) in [
+            (0, 1920, 428, 12), (-1920, 1920, 642, 18),
+            (1920, 900, 856, 24), (0, 428, 428, 12), (0, 900, 900, 12),
+        ] {
+            let position = panel_axis(origin, available, size, margin);
+            assert!(position >= origin);
+            assert!(position + size as i32 <= origin + available as i32);
+        }
+    }
 
     #[test]
     fn blur_closes_only_main_view_after_shown() {

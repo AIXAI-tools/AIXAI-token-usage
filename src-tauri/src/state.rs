@@ -45,10 +45,14 @@ pub(crate) fn is_zh_system() -> bool {
 }
 
 pub(crate) fn zh_of(cfg: &Config) -> bool {
-    match cfg.language.as_str() {
+    zh_for_language(&cfg.language, is_zh_system())
+}
+
+pub(crate) fn zh_for_language(language: &str, system_zh: bool) -> bool {
+    match language {
         "zh-TW" => true,
         "en" => false,
-        _ => is_zh_system(),
+        _ => system_zh,
     }
 }
 
